@@ -2,12 +2,14 @@
 LAKO — RAG Router
 POST /api/rag/query
 RAG query — returns answer + source metadata.
-Session 1: Stub — full implementation in Session 8.
+Session 8: Fully implemented.
 """
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional, List
+
+from services.rag_engine import rag_engine
 
 router = APIRouter()
 
@@ -22,7 +24,7 @@ class RAGRequest(BaseModel):
 class SourceChunk(BaseModel):
     filename: str
     page: int
-    chunk_type: str  # text / table / diagram / image-caption
+    chunk_type: str  # text / table / image-caption
     score: float
     content: str
 
@@ -38,13 +40,17 @@ class RAGResponse(BaseModel):
 async def rag_query(request: RAGRequest):
     """
     RAG query: embed question → search ChromaDB → inject chunks → ask LLM.
-    Returns answer with source citations.
-    STUB — wired to RAG engine in Session 8.
+    Returns answer with source citations (filename, page, chunk_type, score, content).
     """
-    # TODO (Session 8): call rag_engine.query()
+    result = await rag_engine.query(
+        question=request.query,
+        model=request.model,
+        top_k=request.top_k,
+        use_rag=request.use_rag,
+    )
     return RAGResponse(
-        answer="[STUB] RAG endpoint is not yet implemented. Session 8 will wire this to the RAG engine.",
-        sources=[],
-        model=request.model or "qwen3.5:9b",
-        rag_used=request.use_rag,
+        answer=result["answer"],
+        sources=[SourceChunk(**s) for s in result["sources"]],
+        model=result["model"],
+        rag_used=result["rag_used"],
     )

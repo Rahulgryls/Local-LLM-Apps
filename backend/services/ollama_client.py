@@ -5,6 +5,8 @@ Session 3: list_models() and health_check() implemented.
 Sessions 4, 7, 8: embed(), describe_image(), stream_chat() wired later.
 """
 
+import json
+
 import httpx
 from typing import AsyncGenerator, List, Optional
 from config import get_config
@@ -65,10 +67,31 @@ class OllamaClient:
     ) -> AsyncGenerator[str, None]:
         """
         POST /api/generate with stream=True.
-        Yields tokens as they arrive for streaming response.
-        TODO (Session 8): implement streaming.
+        Yields tokens as they arrive — one JSON line per token from Ollama.
+        Stops when Ollama sends {"done": true}.
         """
-        raise NotImplementedError("OllamaClient.stream_chat() — Session 8")
+        effective_model = model or self._primary_model()
+        body: dict = {"model": effective_model, "prompt": prompt, "stream": True}
+        if system:
+            body["system"] = system
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST", f"{self._base_url()}/api/generate", json=body
+            ) as r:
+                r.raise_for_status()
+                async for line in r.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                        token = chunk.get("response", "")
+                        if token:
+                            yield token
+                        if chunk.get("done", False):
+                            return
+                    except json.JSONDecodeError:
+                        continue
 
     async def chat(
         self,
@@ -78,10 +101,18 @@ class OllamaClient:
     ) -> str:
         """
         POST /api/generate with stream=False.
-        Returns full response as string.
-        TODO (Session 8): implement.
+        Returns full response as a single string.
         """
-        raise NotImplementedError("OllamaClient.chat() — Session 8")
+        effective_model = model or self._primary_model()
+        body: dict = {"model": effective_model, "prompt": prompt, "stream": False}
+        if system:
+            body["system"] = system
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(f"{self._base_url()}/api/generate", json=body)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("response", "")
 
     async def embed(self, text: str) -> List[float]:
         """

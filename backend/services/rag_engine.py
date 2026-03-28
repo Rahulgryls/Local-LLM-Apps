@@ -32,48 +32,93 @@ class RAGEngine:
         """
         Full RAG pipeline:
         1. Embed the user question
-        2. Similarity search in ChromaDB (top_k chunks)
-        3. Filter by similarity_threshold
-        4. Build augmented prompt: system + chunks + question
-        5. Call LLM (streaming or non-streaming)
-        6. Return answer + source citations
+        2. Similarity search in ChromaDB (top_k chunks, filtered by threshold)
+        3. Build augmented prompt: system + chunks + question
+        4. Call LLM (non-streaming)
+        5. Return answer + source citations
 
         Returns dict: {answer, sources, model, rag_used}
-        TODO (Session 8): implement full pipeline.
         """
         config = get_config()
         effective_model = model or config["primary_model"]
         effective_top_k = top_k or config["top_k"]
 
         if not use_rag:
-            # Direct LLM call — no retrieval
-            raise NotImplementedError("RAGEngine.query(use_rag=False) — Session 8")
+            answer = await ollama_client.chat(
+                question, model=effective_model, system=SYSTEM_PROMPT
+            )
+            return {
+                "answer": answer,
+                "sources": [],
+                "model": effective_model,
+                "rag_used": False,
+            }
 
         # Step 1: embed question
-        # query_embedding = await embedder.embed_query(question)
+        query_embedding = await embedder.embed_query(question)
 
-        # Step 2: search ChromaDB
-        # chunks = chroma_client.similarity_search(query_embedding, top_k=effective_top_k, ...)
+        # Step 2: search ChromaDB (similarity_search already filters by threshold)
+        chunks = chroma_client.similarity_search(
+            query_embedding,
+            top_k=effective_top_k,
+            threshold=config["similarity_threshold"],
+        )
 
-        # Step 3: filter by threshold
-        # filtered = [c for c in chunks if c["score"] >= config["similarity_threshold"]]
+        # Step 3: no relevant chunks found
+        if not chunks:
+            return {
+                "answer": "This information was not found in the knowledge base.",
+                "sources": [],
+                "model": effective_model,
+                "rag_used": True,
+            }
 
-        # Step 4: build prompt
-        # prompt = self._build_prompt(question, filtered)
+        # Step 4: build augmented prompt
+        prompt = self._build_prompt(question, chunks)
 
         # Step 5: call LLM
-        # answer = await ollama_client.chat(prompt, model=effective_model, system=SYSTEM_PROMPT)
+        answer = await ollama_client.chat(
+            prompt, model=effective_model, system=SYSTEM_PROMPT
+        )
 
-        # Step 6: return
-        raise NotImplementedError("RAGEngine.query() — Session 8")
+        # Step 6: format sources
+        sources = [
+            {
+                "filename":   c["metadata"]["filename"],
+                "page":       c["metadata"]["page"],
+                "chunk_type": c["metadata"]["chunk_type"],
+                "score":      c["score"],
+                "content":    c["document"],
+            }
+            for c in chunks
+        ]
+
+        return {
+            "answer":   answer,
+            "sources":  sources,
+            "model":    effective_model,
+            "rag_used": True,
+        }
 
     def _build_prompt(self, question: str, chunks: List[dict]) -> str:
         """
         Assemble the augmented prompt:
-        [CONTEXT]\n<chunks>\n[QUESTION]\n<question>
-        TODO (Session 8): implement.
+        [CONTEXT]
+        [Source N: filename | Page P | Type: T]
+        <chunk text>
+        ...
+        [QUESTION]
+        <question>
         """
-        raise NotImplementedError("RAGEngine._build_prompt() — Session 8")
+        context_parts = []
+        for i, chunk in enumerate(chunks, 1):
+            meta = chunk["metadata"]
+            context_parts.append(
+                f"[Source {i}: {meta['filename']} | Page {meta['page']} | Type: {meta['chunk_type']}]\n"
+                f"{chunk['document']}"
+            )
+        context = "\n\n".join(context_parts)
+        return f"[CONTEXT]\n{context}\n\n[QUESTION]\n{question}"
 
 
 # Singleton instance
