@@ -7,7 +7,7 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Upload, FileText, CheckCircle, XCircle } from 'lucide-react'
+import { Upload, FileText, CheckCircle, XCircle, Eye } from 'lucide-react'
 import ProgressBar from '../components/ProgressBar'
 
 const ACCEPTED_TYPES = '.pdf,.txt,.xlsx,.docx,.pptx'
@@ -173,7 +173,18 @@ export default function DocumentIngestion() {
 
       {/* Progress bar */}
       {status !== 'idle' && (
-        <ProgressBar progress={progress} label={progressLabel()} />
+        <div className="w-full">
+          <div className="flex justify-between text-xs text-gray-400 mb-1">
+            <span className="flex items-center gap-1">
+              {/vision|image/i.test(statusMessage) && (
+                <Eye size={12} className="text-blue-400 flex-shrink-0" />
+              )}
+              {progressLabel()}
+            </span>
+            <span>{progress}%</span>
+          </div>
+          <ProgressBar progress={progress} />
+        </div>
       )}
 
       {/* Status messages */}

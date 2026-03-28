@@ -6,6 +6,9 @@ Session 5: PDF + TXT pipeline implemented.
 Session 6: Excel, Word, PowerPoint parsers added.
 """
 
+import asyncio
+import io
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +17,7 @@ from typing import List
 import aiofiles
 from fastapi import APIRouter, BackgroundTasks, UploadFile, File
 from fastapi.responses import JSONResponse
+from PIL import Image as PILImage
 from pydantic import BaseModel
 
 from services.parsers.pdf_parser import pdf_parser
@@ -24,6 +28,7 @@ from services.parsers.ppt_parser import ppt_parser
 from services.chunker import chunker
 from services.embedder import embedder
 from services.chroma_client import chroma_client
+from services.vision_service import vision_service
 
 router = APIRouter()
 
@@ -185,15 +190,54 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                     if table_text.strip():
                         tables.append({"text": table_text, "page": pg.page_number})
 
-            if not text_blocks and not tables:
-                _set_job(job_id, progress=pct(1.0), message=f"No text found in {filename} — skipped")
+            # ── Step 3b: Vision pipeline — describe PDF images (Session 7) ──
+            image_captions = []
+            if ext == ".pdf":
+                all_page_images = [
+                    (pg.page_number, img_bytes)
+                    for pg in parsed_doc.pages
+                    for img_bytes in pg.images
+                ]
+                if all_page_images:
+                    _set_job(
+                        job_id,
+                        progress=pct(0.35),
+                        message=f"[vision] Found {len(all_page_images)} image(s) in {filename} — analysing...",
+                    )
+                    for img_idx, (page_num, img_bytes) in enumerate(all_page_images):
+                        try:
+                            img = PILImage.open(io.BytesIO(img_bytes))
+                            w, h = img.size
+                            if w < 100 or h < 100:
+                                continue
+                            _set_job(
+                                job_id,
+                                message=f"[vision] Describing image {img_idx + 1}/{len(all_page_images)} (page {page_num})...",
+                            )
+                            caption = await asyncio.wait_for(
+                                vision_service.describe_image_bytes(img_bytes),
+                                timeout=60.0,
+                            )
+                            if caption.strip():
+                                image_captions.append({"caption": caption, "page": page_num})
+                        except asyncio.TimeoutError:
+                            logging.warning(
+                                f"Vision timeout — {filename} image {img_idx + 1} page {page_num}"
+                            )
+                        except Exception as exc:
+                            logging.warning(
+                                f"Vision error — {filename} image {img_idx + 1} page {page_num}: {exc}"
+                            )
+
+            if not text_blocks and not tables and not image_captions:
+                _set_job(job_id, progress=pct(1.0), message=f"No content found in {filename} — skipped")
                 continue
 
             extracted = {
                 "filename": filename,
                 "text_blocks": text_blocks,
-                "tables": tables,  # Excel sheets + Word/PDF tables
-                "images": [],      # populated in Session 7 (vision pipeline)
+                "tables": tables,
+                "images": image_captions,  # vision captions from Session 7
             }
 
             # ── Step 4: Chunk ─────────────────────────────────────────────

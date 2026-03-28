@@ -121,9 +121,21 @@ class OllamaClient:
         """
         POST /api/generate with images field — Vision model call.
         Uses vision_model from config (llava:13b).
-        TODO (Session 7): implement.
+        stream=False — returns full response as a single string.
         """
-        raise NotImplementedError("OllamaClient.describe_image() — Session 7")
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                f"{self._base_url()}/api/generate",
+                json={
+                    "model": self._vision_model(),
+                    "prompt": prompt,
+                    "images": [image_base64],
+                    "stream": False,
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data.get("response", "")
 
 
 # Singleton instance
