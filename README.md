@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 7 complete — 2026-03-28
+**Last updated:** Session 8 complete — 2026-03-28
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -146,15 +146,17 @@ lako/
 │   │   │                             a request, process it, return a response.
 │   │   │
 │   │   ├── chat.py                 ← POST /api/chat
-│   │   │                             Direct LLM query. Takes a prompt, sends to Ollama,
-│   │   │                             returns the answer. No document search involved.
-│   │   │                             STUB until Session 8.
+│   │   │                             Direct LLM query. Takes a prompt, sends to Ollama.
+│   │   │                             stream=true (default): StreamingResponse(text/plain),
+│   │   │                             tokens yielded as they arrive from Ollama.
+│   │   │                             stream=false: JSON ChatResponse with full answer.
+│   │   │                             LIVE (Session 8).
 │   │   │
 │   │   ├── rag.py                  ← POST /api/rag/query
 │   │   │                             RAG query. Takes a question, searches ChromaDB,
 │   │   │                             injects relevant chunks, asks qwen3.5:9b, returns
-│   │   │                             answer + source citations.
-│   │   │                             STUB until Session 8.
+│   │   │                             answer + source citations (filename, page, score).
+│   │   │                             LIVE (Session 8).
 │   │   │
 │   │   ├── ingest.py               ← POST /api/ingest/docs — upload files
 │   │   │                             GET  /api/ingest/status — poll progress (job_id)
@@ -188,7 +190,10 @@ lako/
 │       │                             embed() + embed_batch(): LIVE (Session 4).
 │       │                             describe_image(): LIVE (Session 7) — POST /api/generate
 │       │                             with images field, vision_model from config, stream=false.
-│       │                             stream_chat() / chat(): STUB until Session 8.
+│       │                             chat(): LIVE (Session 8) — POST /api/generate stream=false,
+│       │                             120s timeout, optional system prompt.
+│       │                             stream_chat(): LIVE (Session 8) — async generator, yields
+│       │                             tokens from Ollama streaming JSON line-by-line.
 │       │                             Reads config fresh on every call — respects config changes
 │       │                             without backend restart.
 │       │
@@ -206,9 +211,12 @@ lako/
 │       │                             STUB until Session 4.
 │       │
 │       ├── rag_engine.py           ← Orchestrates the full RAG pipeline: embed question →
-│       │                             search ChromaDB → build prompt → call qwen3.5:9b →
-│       │                             return answer + sources.
-│       │                             STUB until Session 8.
+│       │                             search ChromaDB → threshold filter → _build_prompt()
+│       │                             ([CONTEXT] chunks [QUESTION]) → call LLM → return
+│       │                             {answer, sources, model, rag_used}.
+│       │                             use_rag=false: calls LLM directly (no retrieval).
+│       │                             No chunks above threshold → canned not-found message.
+│       │                             LIVE (Session 8).
 │       │
 │       ├── vision_service.py       ← Sends extracted images to llava:13b and gets back
 │       │                             a text description. Called during PDF ingestion when
@@ -284,9 +292,13 @@ lako/
 │       │   │
 │       │   ├── Chat.jsx            ← /chat route.
 │       │   │                         Main question-answering interface.
-│       │   │                         RAG toggle (on = search documents, off = direct LLM),
-│       │   │                         text input, streaming answer display, source citations.
-│       │   │                         STUB — Ollama calls wired in Session 8.
+│       │   │                         RAG ON → POST /api/rag/query, full JSON response,
+│       │   │                         SourceCitations component shows filename/page/score.
+│       │   │                         RAG OFF → POST /api/chat stream=true, ReadableStream
+│       │   │                         + TextDecoder, tokens rendered as they arrive.
+│       │   │                         Model dropdown from Zustand availableModels.
+│       │   │                         Clear button. Enter sends, Shift+Enter newline.
+│       │   │                         LIVE (Session 8).
 │       │   │
 │       │   ├── DocumentIngestion.jsx ← /ingest/docs route.
 │       │   │                           File upload UI with drag-and-drop zone.
@@ -333,7 +345,7 @@ lako/
 │       │   └── SourceCitations.jsx ← Expandable source panel shown under each RAG answer.
 │       │                             Displays: filename, page number, chunk type, score.
 │       │                             Collapsed by default — click to expand.
-│       │                             Wired in Session 8 when RAG returns real sources.
+│       │                             LIVE (Session 8) — receives sources[] from Chat.jsx.
 │       │
 │       ├── store/
 │       │   └── appStore.js         ← Zustand global state store.
@@ -510,7 +522,7 @@ http://localhost:5173
 | 5 | Claude Code | COMPLETE | PDF + TXT ingestion pipeline fully wired. `pdf_parser`: PyMuPDF text + image extraction per page, Tesseract OCR fallback for scanned pages, clear error if Tesseract binary missing. `txt_parser`: UTF-8/latin-1 read, wraps as single ParsedPage. `ingest.py`: `POST /api/ingest/docs` saves files to `/storage/uploads/`, runs parse→chunk→embed→store pipeline in background via FastAPI BackgroundTasks, real progress tracking per file. `GET /api/ingest/status` returns live progress, message, and chunk count. `DocumentIngestion.jsx`: real FormData POST, 3s polling loop, live progress bar, chunk count on success, error display. Tesseract installed via `brew install tesseract`. |
 | 6 | Claude Code | COMPLETE | Excel, Word, PowerPoint parsers fully implemented. `excel_parser`: each sheet → ParsedPage with pipe-separated table content in `page.tables`. `word_parser`: paragraphs with `# ## ###` heading markers → `page.text`, tables → `page.tables`. `ppt_parser`: each slide → ParsedPage with title (# prefix) + text boxes + speaker notes; title deduplication via `shape_id` comparison. `ingest.py`: parser routing for all 5 formats, extracted dict now populates both `text_blocks` and `tables` from parsed pages so Excel/Word tables flow through `chunk_table()`. `DocumentIngestion.jsx`: updated `accept` attribute to include XLSX, DOCX, PPTX. |
 | 7 | Claude Code | COMPLETE | Vision pipeline: `describe_image()` in ollama_client (POST /api/generate, images field, stream=false). `vision_service`: all three methods wired — bytes/file/base64, Pillow size check (min 100×100). `ingest.py`: PDF pipeline extended — per-page image extraction → size filter → 60s timeout vision call → chunk_image_caption → embed → ChromaDB. Errors/timeouts logged, never fail ingestion. `DocumentIngestion.jsx`: Eye icon on progress label during vision messages. |
-| 8 | Claude Code | PENDING | RAG engine, Chat interface with streaming, source citations display |
+| 8 | Claude Code | COMPLETE | RAG engine fully wired: embed → ChromaDB similarity search → threshold filter → `_build_prompt()` ([CONTEXT] + [QUESTION]) → `chat()` → `{answer, sources, model, rag_used}`. `ollama_client.chat()` (stream=false, 120s) and `stream_chat()` (async generator, line-by-line Ollama JSON). `/api/chat`: streaming `StreamingResponse` or JSON. `/api/rag/query`: full RAG pipeline with typed `SourceChunk` response. `Chat.jsx`: RAG toggle, streaming via `ReadableStream`+`TextDecoder`, `SourceCitations` wired, model dropdown from Zustand, Clear button, Enter/Shift+Enter. |
 | 9 | Claude Code | PENDING | Confluence single page ingestion: URL parsing, REST client, auth |
 | 10 | Claude Code | PENDING | REST API gateway, API key auth, all external endpoints tested |
 | 11 | Claude Code | PENDING | Dashboard health pings, polling progress UI, ingestion status screen |
@@ -601,6 +613,30 @@ The Eye icon appears when `/vision|image/i.test(statusMessage)` is true — it t
 
 ## What "STUB" Means
 
+## Session 8 — Technical Decisions Made
+
+### stream_chat() as an async generator, not a coroutine
+`stream_chat()` uses `yield` inside an `async with httpx.AsyncClient(...)` block. This makes it a Python async generator function — it keeps the HTTP connection open as long as tokens are being yielded. `chat.py` wraps it in a nested `async def generate()` and passes that to FastAPI's `StreamingResponse`. This is the correct httpx + FastAPI streaming pattern: the connection stays alive, tokens flow directly to the browser without buffering.
+
+### Ollama streaming JSON format
+Ollama's streaming API sends one JSON object per line, each with `{"response": "token", "done": false}`. The final message has `"done": true` and an empty `response`. `stream_chat()` parses each line with `json.loads()`, yields `chunk["response"]` if non-empty, and returns when `done` is true. `json.JSONDecodeError` is silently skipped — occasional blank lines or keepalive lines do not crash the stream.
+
+### RAG prompt format: [CONTEXT] / [QUESTION] delimiters
+The augmented prompt uses explicit section markers: `[CONTEXT]` followed by numbered source blocks (`[Source N: filename | Page P | Type: T]`), then `[QUESTION]`. This structured format helps qwen3.5 clearly distinguish document excerpts from the user's question, reducing the risk of the model confusing document text with the query. The SYSTEM_PROMPT reinforces that the model should only answer from the provided context.
+
+### "Not found" response — no LLM call when no chunks match
+When ChromaDB returns zero chunks above the similarity threshold, `rag_engine.query()` returns the canned string immediately without calling the LLM. Calling the LLM with no context would either hallucinate an answer or produce a confusing response. The canned message is deterministic and honest: *"This information was not found in the knowledge base."* This saves ~10–30 seconds of LLM wait time per unanswerable query.
+
+### Model selector: empty string = config default
+`Chat.jsx` initialises `selectedModel` as `""`. When `""`, the API call passes `model: undefined`, which FastAPI interprets as `null`, and the backend falls back to `config["primary_model"]`. This means the default option in the dropdown always shows the actual configured model name (from Zustand `primaryModel`), and switching back to it passes nothing (not a hardcoded name), so if the admin changes the primary model in Settings, the Chat page picks it up immediately.
+
+### RAG non-streaming, direct chat streaming
+RAG responses are non-streaming (`ollama_client.chat()`) because they require the full answer before source citations can be attached and returned as a JSON object. Direct chat (RAG OFF) uses `stream_chat()` for perceived performance — tokens appear immediately, the user sees the model "thinking" in real time. The tradeoff: RAG mode has a delay before anything appears; direct mode starts rendering tokens within ~1 second.
+
+---
+
+## What "STUB" Means
+
 Throughout the codebase, functions and API endpoints are marked `# STUB` or `[STUB]`. This means:
 
 - The function exists and is wired up (FastAPI registers it, React calls it)
@@ -667,4 +703,4 @@ LAKO's documentation is designed to be uploaded to NotebookLM to create a privat
 ---
 
 *Prepared for vibe coding — Claude Code + OpenClaw*
-*Sessions 1–7 complete — 2026-03-28*
+*Sessions 1–8 complete — 2026-03-28*
