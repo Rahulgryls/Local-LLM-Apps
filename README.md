@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 6 complete — 2026-03-28
+**Last updated:** Session 7 complete — 2026-03-28
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -185,7 +185,10 @@ lako/
 │       ├── ollama_client.py        ← Wrapper for Ollama API calls.
 │       │                             list_models(): calls GET /api/tags, returns name/size/date.
 │       │                             health_check(): pings Ollama root, returns bool.
-│       │                             embed(), stream_chat(), describe_image(): STUB (Sessions 4/7/8).
+│       │                             embed() + embed_batch(): LIVE (Session 4).
+│       │                             describe_image(): LIVE (Session 7) — POST /api/generate
+│       │                             with images field, vision_model from config, stream=false.
+│       │                             stream_chat() / chat(): STUB until Session 8.
 │       │                             Reads config fresh on every call — respects config changes
 │       │                             without backend restart.
 │       │
@@ -210,7 +213,10 @@ lako/
 │       ├── vision_service.py       ← Sends extracted images to llava:13b and gets back
 │       │                             a text description. Called during PDF ingestion when
 │       │                             an embedded diagram or image is found.
-│       │                             STUB until Session 7.
+│       │                             LIVE (Session 7): describe_image_bytes() checks dims
+│       │                             via Pillow (min 100×100), base64-encodes, calls ollama.
+│       │                             describe_image_file() reads from disk. All three methods
+│       │                             wired — uses vision_model from config, never hardcoded.
 │       │
 │       ├── confluence_client.py    ← Fetches a Confluence page by URL using the Confluence
 │       │                             REST API. Parses the HTML body using BeautifulSoup.
@@ -285,6 +291,8 @@ lako/
 │       │   ├── DocumentIngestion.jsx ← /ingest/docs route.
 │       │   │                           File upload UI with drag-and-drop zone.
 │       │   │                           Session 5: PDF + TXT fully wired. DOCX/XLSX/PPTX in Session 6.
+│       │   │                           Session 7: Eye icon shown next to progress label when
+│       │   │                           status message contains "vision" or "image".
 │       │   │                           POSTs to /api/ingest/docs, polls /api/ingest/status every 3s.
 │       │   │                           Shows live progress bar and chunk count on completion.
 │       │   │
@@ -501,7 +509,7 @@ http://localhost:5173
 | 4 | Claude Code | COMPLETE | ChromaDB fully wired. `chroma_client`: PersistentClient with cosine similarity, `add_chunks()`, `similarity_search()` (threshold filtering), `get_stats()`, `clear_collection()`. `embedder`: `embed_text()`, `embed_chunks()` (batch), `embed_query()`. `chunker`: sliding-window `chunk_text()` with sentence-boundary breaks, `chunk_table()`, `chunk_image_caption()`, `chunk_document()` routes all content types. `ollama_client.embed()` + `embed_batch()` via `/api/embed`. `GET /api/vector/status` and `DELETE /api/vector/clear` live. VectorDB page shows live stats + clear button with double-confirm. Fixed `chromadb_path` in config.json to actual dev path. |
 | 5 | Claude Code | COMPLETE | PDF + TXT ingestion pipeline fully wired. `pdf_parser`: PyMuPDF text + image extraction per page, Tesseract OCR fallback for scanned pages, clear error if Tesseract binary missing. `txt_parser`: UTF-8/latin-1 read, wraps as single ParsedPage. `ingest.py`: `POST /api/ingest/docs` saves files to `/storage/uploads/`, runs parse→chunk→embed→store pipeline in background via FastAPI BackgroundTasks, real progress tracking per file. `GET /api/ingest/status` returns live progress, message, and chunk count. `DocumentIngestion.jsx`: real FormData POST, 3s polling loop, live progress bar, chunk count on success, error display. Tesseract installed via `brew install tesseract`. |
 | 6 | Claude Code | COMPLETE | Excel, Word, PowerPoint parsers fully implemented. `excel_parser`: each sheet → ParsedPage with pipe-separated table content in `page.tables`. `word_parser`: paragraphs with `# ## ###` heading markers → `page.text`, tables → `page.tables`. `ppt_parser`: each slide → ParsedPage with title (# prefix) + text boxes + speaker notes; title deduplication via `shape_id` comparison. `ingest.py`: parser routing for all 5 formats, extracted dict now populates both `text_blocks` and `tables` from parsed pages so Excel/Word tables flow through `chunk_table()`. `DocumentIngestion.jsx`: updated `accept` attribute to include XLSX, DOCX, PPTX. |
-| 7 | Claude Code | PENDING | Vision pipeline: image extraction from PDFs + llava:13b description service |
+| 7 | Claude Code | COMPLETE | Vision pipeline: `describe_image()` in ollama_client (POST /api/generate, images field, stream=false). `vision_service`: all three methods wired — bytes/file/base64, Pillow size check (min 100×100). `ingest.py`: PDF pipeline extended — per-page image extraction → size filter → 60s timeout vision call → chunk_image_caption → embed → ChromaDB. Errors/timeouts logged, never fail ingestion. `DocumentIngestion.jsx`: Eye icon on progress label during vision messages. |
 | 8 | Claude Code | PENDING | RAG engine, Chat interface with streaming, source citations display |
 | 9 | Claude Code | PENDING | Confluence single page ingestion: URL parsing, REST client, auth |
 | 10 | Claude Code | PENDING | REST API gateway, API key auth, all external endpoints tested |
@@ -569,6 +577,25 @@ The three model fields (Primary LLM, Vision Model, Embedding Model) are now `<se
 
 ### config.json write safety
 `save_config()` in `config.py` reads the current config first, merges the new values on top of it, then writes the full merged result back to disk. This means a `POST /api/config` with only `{"top_k": 7}` will not erase all other fields — it will only update `top_k` and leave everything else unchanged.
+
+---
+
+## Session 7 — Technical Decisions Made
+
+### Vision pipeline placement: between parse and chunk (not after)
+The vision image processing runs *before* `chunk_document()` is called. This means image captions flow into `extracted["images"]` and are handled uniformly by the existing `chunk_document()` → embed → store pipeline. The alternative — processing images after text chunks and storing them separately — would have required duplicating the embed/store code. Keeping the vision step as "populate `extracted["images"]`" meant zero changes to the chunker, embedder, or ChromaDB storage code.
+
+### 100×100 px minimum image size
+PDFs often contain tiny decorative images: logos, line separators, bullet icons, page borders. These are visually meaningless but would burn vision model time and produce useless captions like "this is a small black square." The 100×100 px threshold filters out these artefacts. The check runs via Pillow (`Image.open(io.BytesIO(bytes)).size`) before any Ollama call, so it is fast and adds no network cost.
+
+### 60-second timeout per image with non-fatal error handling
+llava:13b is a 13-billion-parameter model — it takes 20–45 seconds per image on a MacBook. If Ollama is under load or the image is unusually complex, it can exceed this. The `asyncio.wait_for(timeout=60.0)` wraps each call. On timeout or any other exception, a `logging.warning()` is emitted and the loop continues to the next image. This ensures a PDF with 20 images does not fail because image 3 timed out — the other 19 images and all text are still ingested successfully.
+
+### vision_model always from config — never hardcoded
+`ollama_client._vision_model()` reads `config["vision_model"]` on every call. This means switching from llava:13b to a future llava:34b or BakLLaVA model is a one-line change in config.json — no code change required. The Settings page already exposes this field.
+
+### Eye icon: regex match on live status message
+The Eye icon appears when `/vision|image/i.test(statusMessage)` is true — it tests the live message string (not a separate boolean state). This is reliable because all vision-related progress messages in ingest.py are prefixed with `[vision]` or contain the word "image." The regex is case-insensitive as a defensive measure. No additional backend response fields were needed.
 
 ---
 
@@ -640,4 +667,4 @@ LAKO's documentation is designed to be uploaded to NotebookLM to create a privat
 ---
 
 *Prepared for vibe coding — Claude Code + OpenClaw*
-*Sessions 1–2 complete — 2026-03-28*
+*Sessions 1–7 complete — 2026-03-28*
