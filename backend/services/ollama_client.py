@@ -85,11 +85,33 @@ class OllamaClient:
 
     async def embed(self, text: str) -> List[float]:
         """
-        POST /api/embeddings — Generate embedding vector for text.
+        POST /api/embed — Generate a single embedding vector for text.
         Uses embedding_model from config (nomic-embed-text).
-        TODO (Session 4): implement.
+        Returns a flat list of floats (768 dims for nomic-embed-text).
         """
-        raise NotImplementedError("OllamaClient.embed() — Session 4")
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{self._base_url()}/api/embed",
+                json={"model": self._embedding_model(), "input": text},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data["embeddings"][0]
+
+    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        POST /api/embed with a list of inputs — batch embedding.
+        More efficient than calling embed() in a loop.
+        Returns list of float vectors, one per input text.
+        """
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                f"{self._base_url()}/api/embed",
+                json={"model": self._embedding_model(), "input": texts},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data["embeddings"]
 
     async def describe_image(
         self,

@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 3 complete — 2026-03-28
+**Last updated:** Session 4 complete — 2026-03-28
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -419,7 +419,8 @@ All endpoints are prefixed with `/api`. The FastAPI Swagger UI at `http://localh
 | POST | `/api/ingest/docs` | STUB | Upload one or more files. Returns a job_id. Then poll /api/ingest/status with that job_id. |
 | GET | `/api/ingest/status` | STUB | Poll ingestion progress. Pass `?job_id=...`. Returns progress 0–100. |
 | POST | `/api/ingest/confluence` | STUB | Pass a Confluence page URL. LAKO fetches and ingests it. |
-| GET | `/api/vector/status` | STUB | Returns ChromaDB health, total chunks stored, and storage path. |
+| GET | `/api/vector/status` | LIVE | Returns ChromaDB health, collection name, total chunks, and storage path. |
+| DELETE | `/api/vector/clear` | LIVE | Deletes all chunks from the collection. Returns count of deleted chunks. Collection is recreated empty immediately. |
 
 **LIVE** = working now. **STUB** = returns placeholder data, real logic added in a later session.
 
@@ -493,7 +494,7 @@ http://localhost:5173
 | 1 | OpenClaw | COMPLETE | Full project folder created. All Python stub files, all React stub files, all config files, storage directories, documentation framework, git-ready structure. |
 | 2 | Claude Code | COMPLETE | Backend made fully runnable — Python venv created (`backend/.venv`), all dependencies installed via pip, uvicorn starts and serves at :8000, `GET /` returns `{"status":"ok"}`. Frontend made fully runnable — npm install, Vite dev server confirmed at :5173. CORS verified. Package.json cleaned up (removed incompatible `@tailwindcss/vite` v4 package and invalid `@shadcn/ui` package). All 6 sidebar routes render their page stubs without errors. |
 | 3 | Claude Code | COMPLETE | Ollama integration fully wired. `ollama_client.list_models()` calls live `GET /api/tags`. `GET /api/models` returns all installed models + role assignments from config + per-role health booleans. `GET /api/config` returns full config.json. `POST /api/config` saves any fields to config.json and reloads. Settings page loads live model dropdowns and saves via backend. Dashboard model cards show green/red based on whether each configured model is installed in Ollama. Handles `nomic-embed-text` vs `nomic-embed-text:latest` name matching. |
-| 4 | Claude Code | PENDING | ChromaDB setup, embedder service, chunker service, config.json wiring |
+| 4 | Claude Code | COMPLETE | ChromaDB fully wired. `chroma_client`: PersistentClient with cosine similarity, `add_chunks()`, `similarity_search()` (threshold filtering), `get_stats()`, `clear_collection()`. `embedder`: `embed_text()`, `embed_chunks()` (batch), `embed_query()`. `chunker`: sliding-window `chunk_text()` with sentence-boundary breaks, `chunk_table()`, `chunk_image_caption()`, `chunk_document()` routes all content types. `ollama_client.embed()` + `embed_batch()` via `/api/embed`. `GET /api/vector/status` and `DELETE /api/vector/clear` live. VectorDB page shows live stats + clear button with double-confirm. Fixed `chromadb_path` in config.json to actual dev path. |
 | 5 | Claude Code | PENDING | PDF + TXT ingestion pipeline, file upload endpoint, Tesseract OCR fallback |
 | 6 | Claude Code | PENDING | Excel, Word, PowerPoint parsers plugged into ingestion pipeline |
 | 7 | Claude Code | PENDING | Vision pipeline: image extraction from PDFs + llava:13b description service |
@@ -523,6 +524,28 @@ Node.js was printing a warning that `postcss.config.js` was being parsed as Comm
 
 ### CORS configuration
 CORS (Cross-Origin Resource Sharing) is a browser security rule that blocks JavaScript on one domain from calling an API on a different domain. Since the React frontend runs at port 5173 and the FastAPI backend runs at port 8000, they are technically different origins. The backend's `main.py` includes `CORSMiddleware` that explicitly allows requests from `http://localhost:5173` — verified to return the correct `Access-Control-Allow-Origin` header.
+
+---
+
+## Session 4 — Technical Decisions Made
+
+### Cosine similarity vs L2 distance in ChromaDB
+ChromaDB supports multiple distance metrics. LAKO uses cosine similarity because it measures the *angle* between two vectors — it focuses on meaning, not magnitude. The `similarity_threshold` in config.json (default 0.7) is a cosine similarity value (1 = identical, 0 = unrelated). ChromaDB internally stores cosine *distance* = `1 - similarity`, so the code converts: `similarity = 1 - distance` before applying the threshold filter.
+
+### Ollama /api/embed vs /api/embeddings
+Ollama has two embedding endpoints. The older `/api/embeddings` (singular) accepts one text string at a time. The newer `/api/embed` (plural) accepts a single string OR a list of strings, making batch embedding possible in one HTTP call. LAKO uses `/api/embed` with `embed_batch()` so that embedding many chunks during document ingestion is efficient — one round-trip to Ollama instead of one per chunk.
+
+### Sentence-boundary chunking
+`chunk_text()` tries to break at natural sentence or paragraph boundaries (in order of preference: `\n\n`, `.\n`, `. `, `? `, `! `, `\n`) rather than cutting at exactly 450 characters. This keeps sentence meaning intact and prevents a chunk from ending mid-sentence, which would confuse the LLM during RAG.
+
+### Tables and images are never split
+`chunk_table()` always returns a single chunk regardless of table size. Splitting a table at an arbitrary row would break the relationship between column headers and values. The LLM needs the full table to answer questions like "what is the value in column B for row 3?". Similarly, image captions are always single chunks.
+
+### ChromaDB path: config.json vs bank server
+The reference document specifies `/lako/storage/chromadb` as the ChromaDB path (the bank server deployment path). On the dev Mac, the project lives at `/Users/rahul/lako/`, so config.json was updated to `/Users/rahul/lako/storage/chromadb`. On the bank server, change this back to `/lako/storage/chromadb` — it is a one-line change in config.json.
+
+### Self-healing collection reference
+The `ChromaClient` singleton caches the collection object. If the collection is deleted externally (e.g., by another process or a test script), the cached reference becomes stale and throws errors. `get_collection()` now validates the reference on every call by checking `count()` — if that throws, it resets and recreates. This costs one extra ChromaDB call per operation but prevents silent failures.
 
 ---
 

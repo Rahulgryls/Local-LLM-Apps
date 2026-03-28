@@ -1,45 +1,109 @@
 """
 LAKO — ChromaDB Client Service
 Local vector database — no Docker required.
-Stores and retrieves embedded document chunks.
-Session 1: Stub — wired in Session 4.
+Stores and retrieves embedded document chunks with metadata.
+Session 4: Fully implemented.
 """
 
-from typing import List, Optional
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List
+
+import chromadb
+from chromadb.config import Settings as ChromaSettings
+
 from config import get_config
 
 COLLECTION_NAME = "lako_knowledge_base"
+
+
+def _resolve_path(config_path: str) -> Path:
+    """
+    Resolve the chromadb_path from config.json.
+    On the bank server, /lako/storage/chromadb is a real absolute path.
+    On a dev machine where the project lives elsewhere, the config stores
+    the actual absolute path (e.g. /Users/rahul/lako/storage/chromadb).
+    Always creates the directory if it does not exist.
+    """
+    p = Path(config_path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 class ChromaClient:
     """Client for the local ChromaDB vector store."""
 
     def __init__(self):
-        config = get_config()
-        self.path = config["chromadb_path"]
         self._client = None
         self._collection = None
 
-    def _get_client(self):
-        """Lazy-load ChromaDB client."""
+    def _get_client(self) -> chromadb.PersistentClient:
+        """Lazy-initialize ChromaDB PersistentClient on first use."""
         if self._client is None:
-            # TODO (Session 4): initialize chromadb.PersistentClient(path=self.path)
-            raise NotImplementedError("ChromaClient._get_client() — Session 4")
+            path = _resolve_path(get_config()["chromadb_path"])
+            self._client = chromadb.PersistentClient(
+                path=str(path),
+                settings=ChromaSettings(anonymized_telemetry=False),
+            )
         return self._client
 
     def get_collection(self):
-        """Get or create the LAKO knowledge base collection."""
-        # TODO (Session 4): implement
-        raise NotImplementedError("ChromaClient.get_collection() — Session 4")
+        """
+        Get or create the LAKO knowledge base collection.
+        Uses cosine similarity metric — threshold values in config.json
+        (e.g. 0.7) correspond to cosine similarity, not raw distance.
+        ChromaDB stores cosine distance = 1 - cosine_similarity,
+        so threshold 0.7 similarity → distance <= 0.3.
+        If the cached collection reference is stale (e.g. cleared externally),
+        it resets and recreates automatically.
+        """
+        if self._collection is None:
+            self._collection = self._get_client().get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+        else:
+            # Verify the cached reference is still valid
+            try:
+                self._collection.count()
+            except Exception:
+                self._collection = None
+                return self.get_collection()
+        return self._collection
 
     def add_chunks(self, chunks: List[dict]) -> None:
         """
         Add embedded document chunks to ChromaDB.
-        Each chunk: {id, embedding, document, metadata}
-        metadata: {filename, page, chunk_type, timestamp}
-        TODO (Session 4): implement.
+
+        Each chunk dict must contain:
+          - embedding:  List[float]  — vector from embedder
+          - document:   str          — the text content
+          - metadata:   dict         — filename, page, chunk_type, timestamp
+          - id:         str (opt)    — auto-generated if absent
         """
-        raise NotImplementedError("ChromaClient.add_chunks() — Session 4")
+        if not chunks:
+            return
+
+        collection = self.get_collection()
+        now = datetime.now(timezone.utc).isoformat()
+
+        ids, embeddings, documents, metadatas = [], [], [], []
+
+        for chunk in chunks:
+            chunk_id = chunk.get("id") or str(uuid.uuid4())
+            meta = {
+                "filename":   chunk.get("metadata", {}).get("filename", "unknown"),
+                "page":       int(chunk.get("metadata", {}).get("page", 0)),
+                "chunk_type": chunk.get("metadata", {}).get("chunk_type", "text"),
+                "timestamp":  chunk.get("metadata", {}).get("timestamp", now),
+            }
+            ids.append(chunk_id)
+            embeddings.append(chunk["embedding"])
+            documents.append(chunk["document"])
+            metadatas.append(meta)
+
+        collection.add(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
 
     def similarity_search(
         self,
@@ -48,28 +112,81 @@ class ChromaClient:
         threshold: float = 0.7,
     ) -> List[dict]:
         """
-        Query ChromaDB for most similar chunks to the query embedding.
-        Returns list of {document, metadata, score} dicts.
-        TODO (Session 4): implement.
+        Find the top_k most similar chunks to query_embedding.
+        Filters results to only those with cosine similarity >= threshold.
+
+        ChromaDB returns cosine distance (0 = identical, 2 = opposite).
+        We convert: similarity = 1 - distance, then filter by threshold.
+
+        Returns list of dicts: {document, metadata, score}
+        where score is cosine similarity (0–1).
         """
-        raise NotImplementedError("ChromaClient.similarity_search() — Session 4")
+        collection = self.get_collection()
+        if collection.count() == 0:
+            return []
+
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=min(top_k, collection.count()),
+            include=["documents", "metadatas", "distances"],
+        )
+
+        hits = []
+        distances  = results["distances"][0]
+        documents  = results["documents"][0]
+        metadatas  = results["metadatas"][0]
+
+        for dist, doc, meta in zip(distances, documents, metadatas):
+            similarity = 1.0 - dist          # cosine: distance → similarity
+            if similarity >= threshold:
+                hits.append({
+                    "document": doc,
+                    "metadata": meta,
+                    "score":    round(similarity, 4),
+                })
+
+        # Sort descending by score
+        hits.sort(key=lambda x: x["score"], reverse=True)
+        return hits
 
     def get_stats(self) -> dict:
         """
-        Return collection stats: chunk count, collection name, path.
-        Used by GET /api/vector/status.
-        TODO (Session 4): implement.
+        Return collection stats for the Dashboard and Vector DB page.
+        Returns: status, collection name, total_chunks, path.
         """
-        return {
-            "status": "stub",
-            "collection": COLLECTION_NAME,
-            "total_chunks": 0,
-            "path": self.path,
-        }
+        try:
+            collection = self.get_collection()
+            return {
+                "status":       "ok",
+                "collection":   COLLECTION_NAME,
+                "total_chunks": collection.count(),
+                "path":         get_config()["chromadb_path"],
+            }
+        except Exception as e:
+            return {
+                "status":       "error",
+                "collection":   COLLECTION_NAME,
+                "total_chunks": 0,
+                "path":         get_config()["chromadb_path"],
+                "error":        str(e),
+            }
 
-    def clear_collection(self) -> None:
-        """Delete all chunks from the collection. Use with caution."""
-        raise NotImplementedError("ChromaClient.clear_collection() — Session 4")
+    def clear_collection(self) -> int:
+        """
+        Delete all documents from the collection.
+        Recreates the collection so it is empty but still exists.
+        Returns the number of chunks that were deleted.
+        """
+        try:
+            collection = self.get_collection()
+            count = collection.count()
+            client = self._get_client()
+            client.delete_collection(COLLECTION_NAME)
+            self._collection = None          # force re-creation on next access
+            self.get_collection()            # recreate immediately
+            return count
+        except Exception:
+            return 0
 
 
 # Singleton instance

@@ -1,7 +1,7 @@
 """
 LAKO — Embedder Service
 Converts text into vector embeddings via nomic-embed-text through Ollama.
-Session 1: Stub — wired in Session 4.
+Session 4: Fully implemented.
 """
 
 from typing import List
@@ -14,26 +14,27 @@ class Embedder:
     async def embed_text(self, text: str) -> List[float]:
         """
         Embed a single piece of text.
-        Returns a float vector.
-        TODO (Session 4): call ollama_client.embed(text)
+        Returns a float vector (768 dims for nomic-embed-text).
         """
-        raise NotImplementedError("Embedder.embed_text() — Session 4")
+        return await ollama_client.embed(text)
 
     async def embed_chunks(self, chunks: List[str]) -> List[List[float]]:
         """
-        Embed a list of text chunks in sequence.
-        Returns a list of float vectors.
-        TODO (Session 4): iterate embed_text() over all chunks.
+        Embed a list of text chunks using batch embedding.
+        Returns a list of float vectors, one per chunk.
+        Uses ollama_client.embed_batch() for efficiency.
         """
-        raise NotImplementedError("Embedder.embed_chunks() — Session 4")
+        if not chunks:
+            return []
+        return await ollama_client.embed_batch(chunks)
 
     async def embed_query(self, query: str) -> List[float]:
         """
         Embed a user query for similarity search.
-        Alias for embed_text — kept separate for clarity.
-        TODO (Session 4): call ollama_client.embed(query)
+        Functionally identical to embed_text — kept separate so RAG code
+        is explicit about whether it is embedding a document or a query.
         """
-        raise NotImplementedError("Embedder.embed_query() — Session 4")
+        return await ollama_client.embed(query)
 
 
 # Singleton instance
