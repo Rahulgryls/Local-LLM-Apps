@@ -1,0 +1,34 @@
+{
+  "nav": {
+    "dashboard":         "Dashboard",
+    "chat":              "Chat",
+    "ingestDocs":        "Documenten",
+    "ingestConfluence":  "Confluence",
+    "vectorDb":          "Vector DB",
+    "settings":          "Instellingen"
+  },
+  "chat": {
+    "placeholder":       "Stel een vraag over uw documenten...",
+    "ragOn":             "RAG AAN",
+    "ragOff":            "RAG UIT",
+    "thinking":          "Nadenken...",
+    "answerPlaceholder": "Uw antwoord verschijnt hier."
+  },
+  "ingest": {
+    "dropzone":          "Sleep bestanden hierheen of klik om te bladeren",
+    "supported":         "Ondersteund: PDF, DOCX, XLSX, PPTX, TXT",
+    "ingestButton":      "Bestanden verwerken",
+    "success":           "Bestanden succesvol verwerkt.",
+    "error":             "Verwerking mislukt. Controleer de backend logs."
+  },
+  "settings": {
+    "title":             "Instellingen",
+    "save":              "Instellingen opslaan",
+    "saved":             "Opgeslagen!"
+  },
+  "dashboard": {
+    "title":             "Systeem Dashboard",
+    "refreshModels":     "Modellen vernieuwen",
+    "vectorDb":          "Vectordatabase"
+  }
+}

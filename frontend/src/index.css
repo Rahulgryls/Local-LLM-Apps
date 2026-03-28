@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* LAKO Global Styles */
+body {
+  @apply bg-gray-950 text-gray-100 font-sans;
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Scrollbar styling for dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-gray-900;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-600 rounded;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-500;
+}

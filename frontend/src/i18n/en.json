@@ -1,0 +1,34 @@
+{
+  "nav": {
+    "dashboard":         "Dashboard",
+    "chat":              "Chat",
+    "ingestDocs":        "Documents",
+    "ingestConfluence":  "Confluence",
+    "vectorDb":          "Vector DB",
+    "settings":          "Settings"
+  },
+  "chat": {
+    "placeholder":       "Ask a question about your documents...",
+    "ragOn":             "RAG ON",
+    "ragOff":            "RAG OFF",
+    "thinking":          "Thinking...",
+    "answerPlaceholder": "Your answer will appear here."
+  },
+  "ingest": {
+    "dropzone":          "Drop files here or click to browse",
+    "supported":         "Supported: PDF, DOCX, XLSX, PPTX, TXT",
+    "ingestButton":      "Ingest Files",
+    "success":           "Files ingested successfully.",
+    "error":             "Ingestion failed. Check backend logs."
+  },
+  "settings": {
+    "title":             "Settings",
+    "save":              "Save Settings",
+    "saved":             "Saved!"
+  },
+  "dashboard": {
+    "title":             "System Dashboard",
+    "refreshModels":     "Refresh Models",
+    "vectorDb":          "Vector Database"
+  }
+}

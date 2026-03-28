@@ -1,0 +1,32 @@
+# LAKO — Python Backend Dependencies
+# Install: pip install -r requirements.txt
+# Python version: 3.11+
+
+# ── Web Framework ──────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart          # Required for file upload (UploadFile)
+
+# ── Vector Database ────────────────────────────────────────
+chromadb                  # Local vector storage — no Docker needed
+
+# ── PDF Parsing ────────────────────────────────────────────
+PyMuPDF                   # Primary PDF parser (fitz) — text + image extraction
+pytesseract               # OCR fallback for scanned PDFs
+
+# ── Office Document Parsing ────────────────────────────────
+python-docx               # Word document (.docx) extraction
+openpyxl                  # Excel (.xlsx) reading
+pandas                    # Excel sheet → DataFrame → text
+python-pptx               # PowerPoint (.pptx) slide + notes extraction
+
+# ── Ollama Client ──────────────────────────────────────────
+ollama                    # Official Ollama Python client
+httpx                     # Async HTTP client (used directly where needed)
+
+# ── Confluence / Web ───────────────────────────────────────
+aiofiles                  # Async file I/O for uploads
+beautifulsoup4            # HTML → plain text (Confluence body parsing)
+
+# ── Image Processing ───────────────────────────────────────
+pillow                    # Image conversion for vision model inputs

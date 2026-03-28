@@ -1,0 +1,13 @@
+{
+  "ollama_url":           "http://localhost:11434",
+  "primary_model":        "qwen3.5:9b",
+  "vision_model":         "llava:13b",
+  "embedding_model":      "nomic-embed-text",
+  "chromadb_path":        "/lako/storage/chromadb",
+  "confluence_url":       "https://yourbank.atlassian.net",
+  "confluence_email":     "",
+  "confluence_token":     "",
+  "top_k":                5,
+  "similarity_threshold": 0.7,
+  "api_key":              ""
+}
