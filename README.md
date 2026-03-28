@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 4 complete — 2026-03-28
+**Last updated:** Session 5 complete — 2026-03-28
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -219,8 +219,8 @@ lako/
 │       └── parsers/                ← One file per document format.
 │           ├── pdf_parser.py       ← PyMuPDF text extraction + image extraction per page.
 │           │                         Falls back to Tesseract OCR for scanned pages.
-│           │                         STUB until Session 5.
-│           ├── txt_parser.py       ← Plain text reader. STUB until Session 5.
+│           │                         Session 5: Fully implemented.
+│           ├── txt_parser.py       ← Plain text reader. Session 5: Fully implemented.
 │           ├── excel_parser.py     ← openpyxl + pandas. Sheet name + cell data → text.
 │           │                         STUB until Session 6.
 │           ├── word_parser.py      ← python-docx. Paragraphs + headings + tables → text.
@@ -280,9 +280,9 @@ lako/
 │       │   │
 │       │   ├── DocumentIngestion.jsx ← /ingest/docs route.
 │       │   │                           File upload UI with drag-and-drop zone.
-│       │   │                           Accepts PDF, DOCX, XLSX, PPTX, TXT.
-│       │   │                           Shows progress bar during ingestion.
-│       │   │                           STUB — upload pipeline wired in Session 5.
+│       │   │                           Session 5: PDF + TXT fully wired. DOCX/XLSX/PPTX in Session 6.
+│       │   │                           POSTs to /api/ingest/docs, polls /api/ingest/status every 3s.
+│       │   │                           Shows live progress bar and chunk count on completion.
 │       │   │
 │       │   ├── ConfluenceIngestion.jsx ← /ingest/confluence route.
 │       │   │                             URL input form. Paste a Confluence page URL,
@@ -416,8 +416,8 @@ All endpoints are prefixed with `/api`. The FastAPI Swagger UI at `http://localh
 | POST | `/api/config` | LIVE | Accepts any config fields as JSON. Saves to config.json, reloads config cache, returns updated config. |
 | POST | `/api/chat` | STUB | Send a prompt directly to the primary LLM. No document search. Returns the LLM's answer. |
 | POST | `/api/rag/query` | STUB | Send a question. LAKO searches documents, injects results, returns answer + sources. |
-| POST | `/api/ingest/docs` | STUB | Upload one or more files. Returns a job_id. Then poll /api/ingest/status with that job_id. |
-| GET | `/api/ingest/status` | STUB | Poll ingestion progress. Pass `?job_id=...`. Returns progress 0–100. |
+| POST | `/api/ingest/docs` | LIVE | Upload PDF or TXT files. Saves to `/storage/uploads/`, runs full parse → chunk → embed → store pipeline in background. Returns `job_id`. |
+| GET | `/api/ingest/status` | LIVE | Poll ingestion progress. Pass `?job_id=...`. Returns `status`, `progress` (0–100), `message`, and `chunk_count` when complete. |
 | POST | `/api/ingest/confluence` | STUB | Pass a Confluence page URL. LAKO fetches and ingests it. |
 | GET | `/api/vector/status` | LIVE | Returns ChromaDB health, collection name, total chunks, and storage path. |
 | DELETE | `/api/vector/clear` | LIVE | Deletes all chunks from the collection. Returns count of deleted chunks. Collection is recreated empty immediately. |
@@ -495,7 +495,7 @@ http://localhost:5173
 | 2 | Claude Code | COMPLETE | Backend made fully runnable — Python venv created (`backend/.venv`), all dependencies installed via pip, uvicorn starts and serves at :8000, `GET /` returns `{"status":"ok"}`. Frontend made fully runnable — npm install, Vite dev server confirmed at :5173. CORS verified. Package.json cleaned up (removed incompatible `@tailwindcss/vite` v4 package and invalid `@shadcn/ui` package). All 6 sidebar routes render their page stubs without errors. |
 | 3 | Claude Code | COMPLETE | Ollama integration fully wired. `ollama_client.list_models()` calls live `GET /api/tags`. `GET /api/models` returns all installed models + role assignments from config + per-role health booleans. `GET /api/config` returns full config.json. `POST /api/config` saves any fields to config.json and reloads. Settings page loads live model dropdowns and saves via backend. Dashboard model cards show green/red based on whether each configured model is installed in Ollama. Handles `nomic-embed-text` vs `nomic-embed-text:latest` name matching. |
 | 4 | Claude Code | COMPLETE | ChromaDB fully wired. `chroma_client`: PersistentClient with cosine similarity, `add_chunks()`, `similarity_search()` (threshold filtering), `get_stats()`, `clear_collection()`. `embedder`: `embed_text()`, `embed_chunks()` (batch), `embed_query()`. `chunker`: sliding-window `chunk_text()` with sentence-boundary breaks, `chunk_table()`, `chunk_image_caption()`, `chunk_document()` routes all content types. `ollama_client.embed()` + `embed_batch()` via `/api/embed`. `GET /api/vector/status` and `DELETE /api/vector/clear` live. VectorDB page shows live stats + clear button with double-confirm. Fixed `chromadb_path` in config.json to actual dev path. |
-| 5 | Claude Code | PENDING | PDF + TXT ingestion pipeline, file upload endpoint, Tesseract OCR fallback |
+| 5 | Claude Code | COMPLETE | PDF + TXT ingestion pipeline fully wired. `pdf_parser`: PyMuPDF text + image extraction per page, Tesseract OCR fallback for scanned pages, clear error if Tesseract binary missing. `txt_parser`: UTF-8/latin-1 read, wraps as single ParsedPage. `ingest.py`: `POST /api/ingest/docs` saves files to `/storage/uploads/`, runs parse→chunk→embed→store pipeline in background via FastAPI BackgroundTasks, real progress tracking per file. `GET /api/ingest/status` returns live progress, message, and chunk count. `DocumentIngestion.jsx`: real FormData POST, 3s polling loop, live progress bar, chunk count on success, error display. Tesseract installed via `brew install tesseract`. |
 | 6 | Claude Code | PENDING | Excel, Word, PowerPoint parsers plugged into ingestion pipeline |
 | 7 | Claude Code | PENDING | Vision pipeline: image extraction from PDFs + llava:13b description service |
 | 8 | Claude Code | PENDING | RAG engine, Chat interface with streaming, source citations display |
