@@ -1,6 +1,6 @@
 /**
  * LAKO — Document Ingestion Page
- * File upload UI for PDF and TXT (Session 5). XLSX, DOCX, PPTX added in Session 6.
+ * File upload UI for PDF, TXT, XLSX, DOCX, PPTX.
  * Wires to POST /api/ingest/docs, polls GET /api/ingest/status every 3s.
  * Session 5: Fully wired.
  */
@@ -10,8 +10,7 @@ import { useTranslation } from 'react-i18next'
 import { Upload, FileText, CheckCircle, XCircle } from 'lucide-react'
 import ProgressBar from '../components/ProgressBar'
 
-// Session 5: PDF + TXT only. XLSX, DOCX, PPTX wired in Session 6.
-const ACCEPTED_TYPES = '.pdf,.txt'
+const ACCEPTED_TYPES = '.pdf,.txt,.xlsx,.docx,.pptx'
 
 export default function DocumentIngestion() {
   const { t } = useTranslation()
@@ -146,7 +145,7 @@ export default function DocumentIngestion() {
         <p className="text-sm text-gray-400">
           Drop files here or <span className="text-blue-400">click to browse</span>
         </p>
-        <p className="text-xs text-gray-600 mt-1">Session 5: PDF, TXT — DOCX, XLSX, PPTX added in Session 6</p>
+        <p className="text-xs text-gray-600 mt-1">Supported: PDF, TXT, XLSX, DOCX, PPTX</p>
         <input
           ref={fileRef}
           type="file"

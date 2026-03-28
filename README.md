@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 5 complete — 2026-03-28
+**Last updated:** Session 6 complete — 2026-03-28
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -221,12 +221,16 @@ lako/
 │           │                         Falls back to Tesseract OCR for scanned pages.
 │           │                         Session 5: Fully implemented.
 │           ├── txt_parser.py       ← Plain text reader. Session 5: Fully implemented.
-│           ├── excel_parser.py     ← openpyxl + pandas. Sheet name + cell data → text.
-│           │                         STUB until Session 6.
-│           ├── word_parser.py      ← python-docx. Paragraphs + headings + tables → text.
-│           │                         STUB until Session 6.
-│           └── ppt_parser.py       ← python-pptx. Slide text + speaker notes → text.
-│                                     STUB until Session 6.
+│           ├── excel_parser.py     ← openpyxl + pandas. Each sheet → ParsedPage.
+│           │                         Pipe-separated table stored in page.tables so the
+│           │                         chunker keeps each sheet intact as one chunk.
+│           │                         Session 6: Fully implemented.
+│           ├── word_parser.py      ← python-docx. Headings (# ## ###) + paragraphs →
+│           │                         page.text. Tables → page.tables (pipe-separated).
+│           │                         Session 6: Fully implemented.
+│           └── ppt_parser.py       ← python-pptx. Each slide → ParsedPage.
+│                                     Title (# prefix) + text boxes + speaker notes.
+│                                     Session 6: Fully implemented.
 │
 ├── frontend/                       ← All React browser interface code
 │   ├── index.html                  ← The single HTML page. React mounts into <div id="root">.
@@ -416,7 +420,7 @@ All endpoints are prefixed with `/api`. The FastAPI Swagger UI at `http://localh
 | POST | `/api/config` | LIVE | Accepts any config fields as JSON. Saves to config.json, reloads config cache, returns updated config. |
 | POST | `/api/chat` | STUB | Send a prompt directly to the primary LLM. No document search. Returns the LLM's answer. |
 | POST | `/api/rag/query` | STUB | Send a question. LAKO searches documents, injects results, returns answer + sources. |
-| POST | `/api/ingest/docs` | LIVE | Upload PDF or TXT files. Saves to `/storage/uploads/`, runs full parse → chunk → embed → store pipeline in background. Returns `job_id`. |
+| POST | `/api/ingest/docs` | LIVE | Upload PDF, TXT, XLSX, DOCX, or PPTX files. Saves to `/storage/uploads/`, runs full parse → chunk → embed → store pipeline in background. Returns `job_id`. |
 | GET | `/api/ingest/status` | LIVE | Poll ingestion progress. Pass `?job_id=...`. Returns `status`, `progress` (0–100), `message`, and `chunk_count` when complete. |
 | POST | `/api/ingest/confluence` | STUB | Pass a Confluence page URL. LAKO fetches and ingests it. |
 | GET | `/api/vector/status` | LIVE | Returns ChromaDB health, collection name, total chunks, and storage path. |
@@ -496,7 +500,7 @@ http://localhost:5173
 | 3 | Claude Code | COMPLETE | Ollama integration fully wired. `ollama_client.list_models()` calls live `GET /api/tags`. `GET /api/models` returns all installed models + role assignments from config + per-role health booleans. `GET /api/config` returns full config.json. `POST /api/config` saves any fields to config.json and reloads. Settings page loads live model dropdowns and saves via backend. Dashboard model cards show green/red based on whether each configured model is installed in Ollama. Handles `nomic-embed-text` vs `nomic-embed-text:latest` name matching. |
 | 4 | Claude Code | COMPLETE | ChromaDB fully wired. `chroma_client`: PersistentClient with cosine similarity, `add_chunks()`, `similarity_search()` (threshold filtering), `get_stats()`, `clear_collection()`. `embedder`: `embed_text()`, `embed_chunks()` (batch), `embed_query()`. `chunker`: sliding-window `chunk_text()` with sentence-boundary breaks, `chunk_table()`, `chunk_image_caption()`, `chunk_document()` routes all content types. `ollama_client.embed()` + `embed_batch()` via `/api/embed`. `GET /api/vector/status` and `DELETE /api/vector/clear` live. VectorDB page shows live stats + clear button with double-confirm. Fixed `chromadb_path` in config.json to actual dev path. |
 | 5 | Claude Code | COMPLETE | PDF + TXT ingestion pipeline fully wired. `pdf_parser`: PyMuPDF text + image extraction per page, Tesseract OCR fallback for scanned pages, clear error if Tesseract binary missing. `txt_parser`: UTF-8/latin-1 read, wraps as single ParsedPage. `ingest.py`: `POST /api/ingest/docs` saves files to `/storage/uploads/`, runs parse→chunk→embed→store pipeline in background via FastAPI BackgroundTasks, real progress tracking per file. `GET /api/ingest/status` returns live progress, message, and chunk count. `DocumentIngestion.jsx`: real FormData POST, 3s polling loop, live progress bar, chunk count on success, error display. Tesseract installed via `brew install tesseract`. |
-| 6 | Claude Code | PENDING | Excel, Word, PowerPoint parsers plugged into ingestion pipeline |
+| 6 | Claude Code | COMPLETE | Excel, Word, PowerPoint parsers fully implemented. `excel_parser`: each sheet → ParsedPage with pipe-separated table content in `page.tables`. `word_parser`: paragraphs with `# ## ###` heading markers → `page.text`, tables → `page.tables`. `ppt_parser`: each slide → ParsedPage with title (# prefix) + text boxes + speaker notes; title deduplication via `shape_id` comparison. `ingest.py`: parser routing for all 5 formats, extracted dict now populates both `text_blocks` and `tables` from parsed pages so Excel/Word tables flow through `chunk_table()`. `DocumentIngestion.jsx`: updated `accept` attribute to include XLSX, DOCX, PPTX. |
 | 7 | Claude Code | PENDING | Vision pipeline: image extraction from PDFs + llava:13b description service |
 | 8 | Claude Code | PENDING | RAG engine, Chat interface with streaming, source citations display |
 | 9 | Claude Code | PENDING | Confluence single page ingestion: URL parsing, REST client, auth |

@@ -1,8 +1,9 @@
 """
 LAKO — Ingestion Router
-POST /api/ingest/docs   — Upload PDF/TXT files, run full ingestion pipeline in background
+POST /api/ingest/docs   — Upload files, run full ingestion pipeline in background
 GET  /api/ingest/status — Poll ingestion progress % by job_id
-Session 5: PDF + TXT pipeline fully implemented.
+Session 5: PDF + TXT pipeline implemented.
+Session 6: Excel, Word, PowerPoint parsers added.
 """
 
 import uuid
@@ -17,6 +18,9 @@ from pydantic import BaseModel
 
 from services.parsers.pdf_parser import pdf_parser
 from services.parsers.txt_parser import txt_parser
+from services.parsers.excel_parser import excel_parser
+from services.parsers.word_parser import word_parser
+from services.parsers.ppt_parser import ppt_parser
 from services.chunker import chunker
 from services.embedder import embedder
 from services.chroma_client import chroma_client
@@ -31,8 +35,8 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 # Each entry: { status, progress, files, message, chunk_count, error }
 _jobs: dict = {}
 
-# File types supported in Session 5 (XLSX, DOCX, PPTX added in Session 6)
-ALLOWED_EXTENSIONS = {".pdf", ".txt"}
+# All supported file types (Session 5: pdf, txt — Session 6: xlsx, docx, pptx)
+ALLOWED_EXTENSIONS = {".pdf", ".txt", ".xlsx", ".docx", ".pptx"}
 
 
 class IngestStatusResponse(BaseModel):
@@ -67,7 +71,7 @@ async def ingest_docs(
         return JSONResponse(
             status_code=400,
             content={
-                "error": "No supported files. Accepted formats in Session 5: PDF, TXT.",
+                "error": "No supported files. Accepted: PDF, TXT, XLSX, DOCX, PPTX.",
                 "rejected": rejected_files,
             },
         )
@@ -159,6 +163,12 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                 parsed_doc = pdf_parser.parse(upload_path)
             elif ext == ".txt":
                 parsed_doc = txt_parser.parse(upload_path)
+            elif ext == ".xlsx":
+                parsed_doc = excel_parser.parse(upload_path)
+            elif ext == ".docx":
+                parsed_doc = word_parser.parse(upload_path)
+            elif ext == ".pptx":
+                parsed_doc = ppt_parser.parse(upload_path)
             else:
                 # Should not reach here — filtered at the endpoint
                 continue
@@ -167,19 +177,23 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
 
             # ── Step 3: Build extracted dict for chunker ──────────────────
             text_blocks = []
+            tables = []
             for pg in parsed_doc.pages:
                 if pg.text.strip():
                     text_blocks.append({"text": pg.text, "page": pg.page_number})
+                for table_text in pg.tables:
+                    if table_text.strip():
+                        tables.append({"text": table_text, "page": pg.page_number})
 
-            if not text_blocks:
+            if not text_blocks and not tables:
                 _set_job(job_id, progress=pct(1.0), message=f"No text found in {filename} — skipped")
                 continue
 
             extracted = {
                 "filename": filename,
                 "text_blocks": text_blocks,
-                "tables": [],    # populated in Session 6 (office parsers)
-                "images": [],    # populated in Session 7 (vision pipeline)
+                "tables": tables,  # Excel sheets + Word/PDF tables
+                "images": [],      # populated in Session 7 (vision pipeline)
             }
 
             # ── Step 4: Chunk ─────────────────────────────────────────────
