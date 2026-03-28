@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 2 complete — 2026-03-28
+**Last updated:** Session 3 complete — 2026-03-28
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -167,11 +167,11 @@ lako/
 │   │   │                             runs it through the ingestion pipeline.
 │   │   │                             STUB until Session 9.
 │   │   │
-│   │   ├── models.py               ← GET /api/models
-│   │   │                             Returns all Ollama models installed on this machine,
-│   │   │                             plus which model is assigned to each role (primary/
-│   │   │                             vision/embedding). Used to populate dropdowns in UI.
-│   │   │                             STUB until Session 3.
+│   │   ├── models.py               ← GET /api/models — live Ollama model list + role
+│   │   │                             assignments + per-role health booleans.
+│   │   │                             GET /api/config — returns full config.json.
+│   │   │                             POST /api/config — saves any fields to config.json.
+│   │   │                             LIVE — fully implemented in Session 3.
 │   │   │
 │   │   └── vector.py               ← GET /api/vector/status
 │   │                                 Returns ChromaDB health, total chunk count, collection
@@ -182,9 +182,12 @@ lako/
 │       │                             Think of services as Pega utility rules or data
 │       │                             transforms — they do the actual work.
 │       │
-│       ├── ollama_client.py        ← Wrapper for Ollama API calls. Handles chat, streaming,
-│       │                             model listing, and embedding requests.
-│       │                             STUB until Session 3.
+│       ├── ollama_client.py        ← Wrapper for Ollama API calls.
+│       │                             list_models(): calls GET /api/tags, returns name/size/date.
+│       │                             health_check(): pings Ollama root, returns bool.
+│       │                             embed(), stream_chat(), describe_image(): STUB (Sessions 4/7/8).
+│       │                             Reads config fresh on every call — respects config changes
+│       │                             without backend restart.
 │       │
 │       ├── chroma_client.py        ← Wrapper for ChromaDB. Creates collections, stores
 │       │                             chunks with metadata, performs similarity searches.
@@ -408,12 +411,14 @@ All endpoints are prefixed with `/api`. The FastAPI Swagger UI at `http://localh
 |---|---|---|---|
 | GET | `/` | LIVE | Health check. Returns `{"status":"ok"}`. |
 | GET | `/health` | LIVE | Returns `{"status":"healthy"}`. |
+| GET | `/api/models` | LIVE | Returns all installed Ollama models + role assignments from config + per-role health booleans (`model_health`). |
+| GET | `/api/config` | LIVE | Returns full contents of config.json. |
+| POST | `/api/config` | LIVE | Accepts any config fields as JSON. Saves to config.json, reloads config cache, returns updated config. |
 | POST | `/api/chat` | STUB | Send a prompt directly to the primary LLM. No document search. Returns the LLM's answer. |
 | POST | `/api/rag/query` | STUB | Send a question. LAKO searches documents, injects results, returns answer + sources. |
 | POST | `/api/ingest/docs` | STUB | Upload one or more files. Returns a job_id. Then poll /api/ingest/status with that job_id. |
 | GET | `/api/ingest/status` | STUB | Poll ingestion progress. Pass `?job_id=...`. Returns progress 0–100. |
 | POST | `/api/ingest/confluence` | STUB | Pass a Confluence page URL. LAKO fetches and ingests it. |
-| GET | `/api/models` | STUB | Returns all installed Ollama models + which model is assigned to each role. |
 | GET | `/api/vector/status` | STUB | Returns ChromaDB health, total chunks stored, and storage path. |
 
 **LIVE** = working now. **STUB** = returns placeholder data, real logic added in a later session.
@@ -487,7 +492,7 @@ http://localhost:5173
 |---|---|---|---|
 | 1 | OpenClaw | COMPLETE | Full project folder created. All Python stub files, all React stub files, all config files, storage directories, documentation framework, git-ready structure. |
 | 2 | Claude Code | COMPLETE | Backend made fully runnable — Python venv created (`backend/.venv`), all dependencies installed via pip, uvicorn starts and serves at :8000, `GET /` returns `{"status":"ok"}`. Frontend made fully runnable — npm install, Vite dev server confirmed at :5173. CORS verified. Package.json cleaned up (removed incompatible `@tailwindcss/vite` v4 package and invalid `@shadcn/ui` package). All 6 sidebar routes render their page stubs without errors. |
-| 3 | Claude Code | PENDING | Ollama integration, live model detection, model role assignment, Settings page save/load |
+| 3 | Claude Code | COMPLETE | Ollama integration fully wired. `ollama_client.list_models()` calls live `GET /api/tags`. `GET /api/models` returns all installed models + role assignments from config + per-role health booleans. `GET /api/config` returns full config.json. `POST /api/config` saves any fields to config.json and reloads. Settings page loads live model dropdowns and saves via backend. Dashboard model cards show green/red based on whether each configured model is installed in Ollama. Handles `nomic-embed-text` vs `nomic-embed-text:latest` name matching. |
 | 4 | Claude Code | PENDING | ChromaDB setup, embedder service, chunker service, config.json wiring |
 | 5 | Claude Code | PENDING | PDF + TXT ingestion pipeline, file upload endpoint, Tesseract OCR fallback |
 | 6 | Claude Code | PENDING | Excel, Word, PowerPoint parsers plugged into ingestion pipeline |
@@ -518,6 +523,25 @@ Node.js was printing a warning that `postcss.config.js` was being parsed as Comm
 
 ### CORS configuration
 CORS (Cross-Origin Resource Sharing) is a browser security rule that blocks JavaScript on one domain from calling an API on a different domain. Since the React frontend runs at port 5173 and the FastAPI backend runs at port 8000, they are technically different origins. The backend's `main.py` includes `CORSMiddleware` that explicitly allows requests from `http://localhost:5173` — verified to return the correct `Access-Control-Allow-Origin` header.
+
+---
+
+## Session 3 — Technical Decisions Made
+
+### OllamaClient reads config on every call (not just at startup)
+The original stub stored `self.base_url` once in `__init__`. This meant if the user changed `ollama_url` in Settings and saved it, the running backend would still use the old URL until restarted. The fix: `OllamaClient` now has a `_base_url()` method that calls `get_config()` on every request. Since `get_config()` is cached, this is cheap — and when `POST /api/config` triggers `reload_config()`, the cache clears, and the very next call picks up the new URL automatically.
+
+### Model name matching: "nomic-embed-text" vs "nomic-embed-text:latest"
+Ollama stores models with explicit tags. When you pull `nomic-embed-text` without specifying a tag, Ollama saves it as `nomic-embed-text:latest`. But `config.json` stores it as `nomic-embed-text` (no tag). A simple string equality check would show it as "not installed" (red) even though it is installed. The fix: `_model_installed()` in `models.py` checks if the config name matches any installed model either exactly, or as a prefix followed by `:`. This handles all tag variants.
+
+### GET /api/config added alongside POST /api/config
+The Settings page needs to load current values on page open, not just save them. `GET /api/config` returns the full `config.json` contents. This means the Settings page always shows what's actually saved on disk, not stale frontend defaults.
+
+### Settings page: model dropdowns instead of text inputs
+The three model fields (Primary LLM, Vision Model, Embedding Model) are now `<select>` dropdowns populated from `GET /api/models`. This ensures the user can only select models that are actually installed in Ollama — preventing typos or invalid model names. If Ollama is offline when Settings loads, the current config values are shown as fallback options marked "(not installed)".
+
+### config.json write safety
+`save_config()` in `config.py` reads the current config first, merges the new values on top of it, then writes the full merged result back to disk. This means a `POST /api/config` with only `{"top_k": 7}` will not erase all other fields — it will only update `top_k` and leave everything else unchanged.
 
 ---
 

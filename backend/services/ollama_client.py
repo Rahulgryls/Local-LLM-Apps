@@ -1,8 +1,8 @@
 """
 LAKO — Ollama Client Service
 Handles all communication with the local Ollama server.
-Ollama URL: http://localhost:11434
-Session 1: Stub — wired in Session 3.
+Session 3: list_models() and health_check() implemented.
+Sessions 4, 7, 8: embed(), describe_image(), stream_chat() wired later.
 """
 
 import httpx
@@ -11,22 +11,51 @@ from config import get_config
 
 
 class OllamaClient:
-    """Client for the local Ollama API."""
+    """Client for the local Ollama API. Reads config fresh on each call
+    so that config changes (via POST /api/config) take effect immediately."""
 
-    def __init__(self):
-        config = get_config()
-        self.base_url = config["ollama_url"]
-        self.primary_model = config["primary_model"]
-        self.vision_model = config["vision_model"]
-        self.embedding_model = config["embedding_model"]
+    def _base_url(self) -> str:
+        return get_config()["ollama_url"]
+
+    def _embedding_model(self) -> str:
+        return get_config()["embedding_model"]
+
+    def _vision_model(self) -> str:
+        return get_config()["vision_model"]
+
+    def _primary_model(self) -> str:
+        return get_config()["primary_model"]
 
     async def list_models(self) -> List[dict]:
         """
         GET /api/tags — Returns all installed Ollama models.
-        Used by GET /api/models to auto-populate frontend dropdowns.
-        TODO (Session 3): implement live call.
+        Each entry: { name, size, modified }
         """
-        raise NotImplementedError("OllamaClient.list_models() — Session 3")
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"{self._base_url()}/api/tags")
+            r.raise_for_status()
+            data = r.json()
+
+        result = []
+        for m in data.get("models", []):
+            size_bytes = m.get("size", 0)
+            size_gb = size_bytes / (1024 ** 3)
+            size_str = f"~{size_gb:.1f} GB" if size_gb >= 0.05 else f"~{size_bytes // (1024 ** 2)} MB"
+            result.append({
+                "name": m["name"],
+                "size": size_str,
+                "modified": m.get("modified_at", ""),
+            })
+        return result
+
+    async def health_check(self) -> bool:
+        """GET / on Ollama server — returns True if reachable."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(self._base_url())
+                return r.status_code == 200
+        except Exception:
+            return False
 
     async def stream_chat(
         self,
@@ -57,29 +86,22 @@ class OllamaClient:
     async def embed(self, text: str) -> List[float]:
         """
         POST /api/embeddings — Generate embedding vector for text.
-        Uses embedding_model (nomic-embed-text).
+        Uses embedding_model from config (nomic-embed-text).
         TODO (Session 4): implement.
         """
         raise NotImplementedError("OllamaClient.embed() — Session 4")
 
-    async def describe_image(self, image_base64: str, prompt: str = "Describe this image in detail.") -> str:
+    async def describe_image(
+        self,
+        image_base64: str,
+        prompt: str = "Describe this image in detail.",
+    ) -> str:
         """
         POST /api/generate with images field — Vision model call.
-        Uses vision_model (llava:13b).
+        Uses vision_model from config (llava:13b).
         TODO (Session 7): implement.
         """
         raise NotImplementedError("OllamaClient.describe_image() — Session 7")
-
-    async def health_check(self) -> bool:
-        """
-        GET / on Ollama server — returns True if reachable.
-        """
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.get(self.base_url)
-                return r.status_code == 200
-        except Exception:
-            return False
 
 
 # Singleton instance

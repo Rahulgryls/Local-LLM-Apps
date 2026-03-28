@@ -1,60 +1,86 @@
 /**
  * LAKO — Dashboard Page
- * Model health status (green/red ping per role).
- * ChromaDB stats, ingestion status, Refresh Models button.
- * Session 1: Shell — full implementation in Session 11.
+ * Model health status cards — live from GET /api/models.
+ * Green = model installed in Ollama. Red = not found.
+ * ChromaDB stats stub — wired in Session 4.
+ * Session 3: Model health cards fully wired.
  */
 
-import React, { useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { RefreshCw, CheckCircle, XCircle, Database } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { RefreshCw, CheckCircle, XCircle, Database, WifiOff } from 'lucide-react'
 
 const MODEL_ROLES = [
-  { role: 'Primary LLM',      key: 'primary_model',    default: 'qwen3.5:9b' },
-  { role: 'Vision Model',     key: 'vision_model',     default: 'llava:13b' },
-  { role: 'Embedding Model',  key: 'embedding_model',  default: 'nomic-embed-text' },
+  { role: 'Primary LLM',     key: 'primary_model' },
+  { role: 'Vision Model',    key: 'vision_model' },
+  { role: 'Embedding Model', key: 'embedding_model' },
 ]
 
 export default function Dashboard() {
-  const { t } = useTranslation()
-  const [modelHealth] = useState({}) // TODO (Session 11): poll /api/models
-  const [vectorStats] = useState({ status: 'stub', total_chunks: 0 }) // TODO (Session 11): poll /api/vector/status
+  const [modelsData, setModelsData] = useState(null)
+  const [loading, setLoading]       = useState(false)
+  const [vectorStats]               = useState({ status: 'stub', total_chunks: 0 })
 
-  const handleRefreshModels = () => {
-    // TODO (Session 11): call GET /api/models and update store
-    console.log('[STUB] Refresh Models — Session 11')
+  const fetchModels = async () => {
+    setLoading(true)
+    try {
+      const res = await fetch('/api/models')
+      const data = await res.json()
+      setModelsData(data)
+    } catch (err) {
+      console.error('[Dashboard] Failed to fetch models:', err)
+    } finally {
+      setLoading(false)
+    }
   }
+
+  useEffect(() => {
+    fetchModels()
+  }, [])
 
   return (
     <div className="max-w-4xl space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-white">System Dashboard</h2>
         <button
-          onClick={handleRefreshModels}
-          className="flex items-center gap-2 text-xs px-3 py-2 rounded bg-gray-800 text-gray-400 hover:text-white transition-colors"
+          onClick={fetchModels}
+          disabled={loading}
+          className="flex items-center gap-2 text-xs px-3 py-2 rounded bg-gray-800 text-gray-400 hover:text-white disabled:opacity-50 transition-colors"
         >
-          <RefreshCw size={13} />
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           Refresh Models
         </button>
       </div>
 
+      {/* Ollama unreachable banner */}
+      {modelsData && !modelsData.ollama_reachable && (
+        <div className="flex items-center gap-2 text-xs text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 rounded-lg px-4 py-3">
+          <WifiOff size={13} />
+          Ollama is not reachable at {modelsData.ollama_url || 'localhost:11434'}.
+          Start Ollama and click Refresh Models.
+        </div>
+      )}
+
       {/* Model Health Cards */}
       <div className="grid grid-cols-3 gap-4">
-        {MODEL_ROLES.map(({ role, key, default: defaultModel }) => {
-          const healthy = modelHealth[key]
+        {MODEL_ROLES.map(({ role, key }) => {
+          const modelName = modelsData?.[key]
+          const healthy   = modelsData?.model_health?.[key]
+
           return (
             <div key={key} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-gray-500">{role}</span>
-                {healthy === true ? (
+                {loading || !modelsData ? (
+                  <div className="w-3.5 h-3.5 rounded-full bg-gray-700 animate-pulse" />
+                ) : healthy === true ? (
                   <CheckCircle size={14} className="text-green-400" />
-                ) : healthy === false ? (
-                  <XCircle size={14} className="text-red-400" />
                 ) : (
-                  <div className="w-3.5 h-3.5 rounded-full bg-gray-700" />
+                  <XCircle size={14} className="text-red-400" />
                 )}
               </div>
-              <p className="text-sm font-mono text-blue-400">{defaultModel}</p>
+              <p className="text-sm font-mono text-blue-400 truncate">
+                {modelName || '…'}
+              </p>
             </div>
           )
         })}
@@ -82,10 +108,9 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* STUB notice */}
-      <div className="text-xs text-gray-600 border border-gray-800 rounded-lg px-4 py-3">
-        Dashboard health pings wired in Session 11. Showing placeholder data.
-      </div>
+      <p className="text-xs text-gray-600">
+        Vector DB stats wired in Session 4.
+      </p>
     </div>
   )
 }

@@ -45,3 +45,12 @@ def reload_config() -> dict:
     """Force reload config from disk (clears lru_cache)."""
     get_config.cache_clear()
     return get_config()
+
+
+def save_config(data: dict) -> dict:
+    """Merge data into config.json, persist to disk, reload cache."""
+    current = dict(get_config())   # copy — don't mutate the cached dict
+    current.update(data)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(current, f, indent=2)
+    return reload_config()
