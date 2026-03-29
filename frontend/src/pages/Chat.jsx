@@ -6,7 +6,7 @@
  * Post-session 8: Both RAG ON and OFF now stream via NDJSON — tokens appear live.
  */
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Send, Loader, RotateCcw } from 'lucide-react'
 import SourceCitations from '../components/SourceCitations'
@@ -57,7 +57,7 @@ async function readNDJSONStream(response, { onToken, onSources, onError }) {
 
 export default function Chat() {
   const { t } = useTranslation()
-  const { primaryModel, availableModels } = useAppStore()
+  const { primaryModel } = useAppStore()
 
   const [prompt, setPrompt] = useState('')
   const [answer, setAnswer] = useState('')
@@ -66,6 +66,15 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false)
   const [useRag, setUseRag] = useState(true)
   const [selectedModel, setSelectedModel] = useState('')
+  const [availableModels, setAvailableModels] = useState([])
+
+  // Fetch installed Ollama models on mount so the selector is always populated
+  useEffect(() => {
+    fetch('/api/models')
+      .then(r => r.json())
+      .then(data => setAvailableModels(data.models || []))
+      .catch(() => {})
+  }, [])
 
   const effectiveModel = selectedModel || undefined
 
@@ -137,18 +146,16 @@ export default function Chat() {
           RAG {useRag ? 'ON' : 'OFF'}
         </label>
 
-        {/* Model selector */}
+        {/* Model selector — all installed Ollama models */}
         <select
           value={selectedModel}
           onChange={e => setSelectedModel(e.target.value)}
           className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-blue-400 font-mono focus:outline-none focus:border-blue-600"
         >
-          <option value="">{primaryModel || 'qwen3.5:9b'}</option>
-          {availableModels
-            .filter(m => m.name !== primaryModel)
-            .map(m => (
-              <option key={m.name} value={m.name}>{m.name}</option>
-            ))}
+          <option value="">{primaryModel || 'qwen3.5:9b'} (default)</option>
+          {availableModels.map(m => (
+            <option key={m.name} value={m.name}>{m.name}</option>
+          ))}
         </select>
 
         {(answer || prompt) && (
