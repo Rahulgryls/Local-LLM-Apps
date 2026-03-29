@@ -30,3 +30,6 @@ beautifulsoup4            # HTML → plain text (Confluence body parsing)
 
 # ── Image Processing ───────────────────────────────────────
 pillow                    # Image conversion for vision model inputs
+
+# ── Hybrid Search ──────────────────────────────────────────
+rank_bm25                 # BM25 keyword index — used alongside vector search (RRF fusion)

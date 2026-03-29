@@ -28,8 +28,8 @@ class Chunker:
 
     def __init__(
         self,
-        chunk_size: int = 450,   # target characters per chunk
-        overlap: int = 75,       # character overlap between adjacent chunks
+        chunk_size: int = 900,   # target characters per chunk (~180 words)
+        overlap: int = 180,      # character overlap — 20% of chunk size
     ):
         self.chunk_size = chunk_size
         self.overlap = overlap

@@ -29,6 +29,7 @@ from services.chunker import chunker
 from services.embedder import embedder
 from services.chroma_client import chroma_client
 from services.vision_service import vision_service
+from services.bm25_index import bm25_index
 
 router = APIRouter()
 
@@ -251,9 +252,14 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             _set_job(job_id, progress=pct(0.50), message=f"Chunked into {len(chunks)} chunk(s)")
 
             # ── Step 5: Embed ─────────────────────────────────────────────
+            # Embed with contextual prefix so nomic-embed-text understands
+            # document identity — stored document stays as raw content.
             _set_job(job_id, progress=pct(0.55), message=f"Embedding {len(chunks)} chunks...")
-            chunk_texts = [c.content for c in chunks]
-            embeddings = await embedder.embed_chunks(chunk_texts)
+            embed_texts = [
+                f"[Document: {c.filename} | Page: {c.page} | Type: {c.chunk_type}]\n{c.content}"
+                for c in chunks
+            ]
+            embeddings = await embedder.embed_chunks(embed_texts)
             _set_job(job_id, progress=pct(0.85), message=f"Embeddings generated for {filename}")
 
             # ── Step 6: Store in ChromaDB ─────────────────────────────────
@@ -262,7 +268,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             chroma_chunks = [
                 {
                     "embedding": emb,
-                    "document": chunk.content,
+                    "document": chunk.content,   # raw content for display + BM25
                     "metadata": {
                         "filename": chunk.filename,
                         "page": chunk.page,
@@ -274,6 +280,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             ]
             chroma_client.add_chunks(chroma_chunks)
             total_chunks += len(chroma_chunks)
+            bm25_index.mark_dirty()   # trigger BM25 rebuild on next query
             _set_job(job_id, progress=pct(1.0), message=f"Stored {len(chroma_chunks)} chunks from {filename}")
 
         # ── All files done ────────────────────────────────────────────────

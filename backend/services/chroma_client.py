@@ -171,6 +171,23 @@ class ChromaClient:
                 "error":        str(e),
             }
 
+    def get_all_documents(self) -> List[dict]:
+        """
+        Fetch all stored documents for BM25 index construction.
+        Returns list of {id, document, metadata} dicts.
+        Called by rag_engine when BM25 index needs a rebuild.
+        """
+        collection = self.get_collection()
+        if collection.count() == 0:
+            return []
+        result = collection.get(include=["documents", "metadatas"])
+        return [
+            {"id": id_, "document": doc, "metadata": meta}
+            for id_, doc, meta in zip(
+                result["ids"], result["documents"], result["metadatas"]
+            )
+        ]
+
     def clear_collection(self) -> int:
         """
         Delete all documents from the collection.

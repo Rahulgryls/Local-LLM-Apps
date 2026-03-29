@@ -7,7 +7,7 @@
   "confluence_url": "https://yourbank.atlassian.net",
   "confluence_email": "",
   "confluence_token": "",
-  "top_k": 5,
-  "similarity_threshold": 0.7,
+  "top_k": 10,
+  "similarity_threshold": 0.4,
   "api_key": ""
 }
