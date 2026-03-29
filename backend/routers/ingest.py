@@ -30,6 +30,7 @@ from services.embedder import embedder
 from services.chroma_client import chroma_client
 from services.vision_service import vision_service
 from services.bm25_index import bm25_index
+from services.activity_log import activity_log
 
 router = APIRouter()
 
@@ -290,6 +291,14 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             "chunk_count": total_chunks,
             "message": f"Done. {total_chunks} chunk(s) indexed across {total_files} file(s).",
         })
+        # Log each file as a separate activity entry
+        for fd in file_data:
+            activity_log.append(
+                event_type="pdf",
+                title=fd["filename"],
+                chunks_indexed=total_chunks // total_files if total_files else 0,
+                status="success",
+            )
 
     except Exception as e:
         _jobs[job_id].update({
@@ -297,6 +306,14 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             "progress": _jobs[job_id].get("progress", 0),
             "message": str(e),
         })
+        for fd in file_data:
+            activity_log.append(
+                event_type="pdf",
+                title=fd["filename"],
+                chunks_indexed=0,
+                status="failed",
+                error=str(e),
+            )
 
 
 def _set_job(job_id: str, **kwargs):
