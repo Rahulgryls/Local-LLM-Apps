@@ -95,6 +95,9 @@ class RAGEngine:
                 "chunk_type": c["metadata"]["chunk_type"],
                 "score":      c["score"],
                 "content":    c["document"],
+                # Optional fields present for Confluence sources
+                "source":     c["metadata"].get("source", "document"),
+                "url":        c["metadata"].get("url", ""),
             }
             for c in chunks
         ]
@@ -158,6 +161,9 @@ class RAGEngine:
                     "chunk_type": c["metadata"]["chunk_type"],
                     "score":      c["score"],
                     "content":    c["document"],
+                    # Optional fields present for Confluence sources
+                    "source":     c["metadata"].get("source", "document"),
+                    "url":        c["metadata"].get("url", ""),
                 }
                 for c in chunks
             ]

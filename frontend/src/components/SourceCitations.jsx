@@ -6,7 +6,7 @@
  */
 
 import React, { useState } from 'react'
-import { ChevronDown, ChevronUp, FileText } from 'lucide-react'
+import { ChevronDown, ChevronUp, FileText, Globe } from 'lucide-react'
 
 export default function SourceCitations({ sources = [] }) {
   const [expanded, setExpanded] = useState(false)
@@ -31,8 +31,20 @@ export default function SourceCitations({ sources = [] }) {
           {sources.map((src, i) => (
             <div key={i} className="px-4 py-3 bg-gray-900 text-xs">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-gray-300 font-medium">{src.filename}</span>
-                <span className="text-gray-500">p.{src.page} · {src.chunk_type}</span>
+                <span className="flex items-center gap-1.5 text-gray-300 font-medium">
+                  {src.source === 'confluence'
+                    ? <Globe size={11} className="text-blue-400 flex-shrink-0" />
+                    : <FileText size={11} className="text-gray-500 flex-shrink-0" />
+                  }
+                  {src.url
+                    ? <a href={src.url} target="_blank" rel="noreferrer"
+                         className="hover:text-blue-400 transition-colors">{src.filename}</a>
+                    : src.filename
+                  }
+                </span>
+                <span className="text-gray-500">
+                  {src.source === 'confluence' ? 'Confluence' : `p.${src.page}`} · {src.chunk_type}
+                </span>
               </div>
               <p className="text-gray-500 line-clamp-2">{src.content}</p>
               <span className="text-blue-500 mt-1 block">

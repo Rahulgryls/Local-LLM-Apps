@@ -92,12 +92,15 @@ class ChromaClient:
 
         for chunk in chunks:
             chunk_id = chunk.get("id") or str(uuid.uuid4())
-            meta = {
-                "filename":   chunk.get("metadata", {}).get("filename", "unknown"),
-                "page":       int(chunk.get("metadata", {}).get("page", 0)),
-                "chunk_type": chunk.get("metadata", {}).get("chunk_type", "text"),
-                "timestamp":  chunk.get("metadata", {}).get("timestamp", now),
-            }
+            raw_meta = chunk.get("metadata", {})
+            # Start with all provided metadata fields (allows source-specific
+            # fields like source, url, title, author from Confluence ingestion).
+            # Then ensure the four core fields are present and correctly typed.
+            meta = {k: v for k, v in raw_meta.items() if isinstance(v, (str, int, float, bool))}
+            meta["filename"]   = raw_meta.get("filename", "unknown")
+            meta["page"]       = int(raw_meta.get("page", 0))
+            meta["chunk_type"] = raw_meta.get("chunk_type", "text")
+            meta["timestamp"]  = raw_meta.get("timestamp", now)
             ids.append(chunk_id)
             embeddings.append(chunk["embedding"])
             documents.append(chunk["document"])
