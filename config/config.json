@@ -9,5 +9,7 @@
   "confluence_token": "",
   "top_k": 10,
   "similarity_threshold": 0.4,
-  "api_key": ""
+  "api_key": "",
+  "api_keys_path": "/Users/rahul/lako/storage/api_keys.json",
+  "gateway_enabled": true
 }

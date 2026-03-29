@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from config import get_config
-from routers import chat, rag, ingest, confluence, models, vector
+from routers import chat, rag, ingest, confluence, models, vector, gateway, admin
 
 
 @asynccontextmanager
@@ -50,6 +50,8 @@ app.include_router(ingest.router,     prefix="/api", tags=["Ingestion"])
 app.include_router(confluence.router, prefix="/api", tags=["Confluence"])
 app.include_router(models.router,     prefix="/api", tags=["Models"])
 app.include_router(vector.router,     prefix="/api", tags=["Vector DB"])
+app.include_router(gateway.router,    prefix="/api", tags=["Gateway"])
+app.include_router(admin.router,      prefix="/api", tags=["Admin"])
 
 
 @app.get("/", tags=["Health"])

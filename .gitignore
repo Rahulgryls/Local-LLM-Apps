@@ -23,6 +23,8 @@ storage/chromadb/*
 storage/uploads/*
 !storage/chromadb/.gitkeep
 !storage/uploads/.gitkeep
+# API keys — contains hashed credentials, never commit
+storage/api_keys.json
 
 # Config — keep template but NOT credentials
 # config/config.json is committed as template with empty credentials
