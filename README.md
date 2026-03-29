@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 9 complete — 2026-03-29
+**Last updated:** Session 10 complete — 2026-03-29
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -614,6 +614,25 @@ The Eye icon appears when `/vision|image/i.test(statusMessage)` is true — it t
 ---
 
 ## What "STUB" Means
+
+## Session 10 — Technical Decisions Made
+
+### SHA-256 hash comparison, never plain storage
+`api_key_manager.py` hashes every incoming key with `hashlib.sha256(key.encode()).hexdigest()` before any comparison. The plain key is held in memory only long enough to return it to the caller at creation time. The stored `api_keys.json` file contains only hashes — even if the file is leaked, no key can be recovered from it.
+
+### Prefix for key identification
+The first 9 characters of the key (`lako_` + 4 random chars) are stored as a plain `prefix` field. This lets the Settings UI show admins which key is which ("lako_-D9k…") without storing or transmitting the full key value. The prefix alone cannot be used to reconstruct or brute-force the key.
+
+### FastAPI Depends() for permission checking
+Each gateway endpoint uses a separate dependency function (`_require_query_permission`, `_require_ingest_permission`, `_require_key`) as its `Depends()` argument. This means the auth check, hash validation, `last_used` update, and permission check all happen before any endpoint logic runs — and are fully tested in isolation.
+
+### Admin endpoints: no auth by design (V1)
+`/api/admin/keys` endpoints intentionally have no authentication in V1. In a bank deployment, these are protected at the network layer (only the admin VLAN or localhost can reach port 8000's `/api/admin/*` routes). Adding auth to admin endpoints creates a chicken-and-egg problem: you need a key to create a key. The production mitigation is network-level firewall, not application-level auth.
+
+### Gateway ingest/document is synchronous
+Unlike the UI-based `POST /api/ingest/docs` (which uses background tasks and job polling), `POST /api/gateway/ingest/document` runs synchronously and returns when complete. This makes it simpler for API callers (one request, one response) but means the HTTP connection stays open during processing. Suitable for small documents via the API; large batches should use the UI pipeline.
+
+---
 
 ## Session 9 — Technical Decisions Made
 
