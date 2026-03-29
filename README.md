@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 8 complete — 2026-03-28
+**Last updated:** Session 9 complete — 2026-03-29
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -167,7 +167,7 @@ lako/
 │   │   ├── confluence.py           ← POST /api/ingest/confluence
 │   │   │                             Takes a Confluence page URL, fetches the page content,
 │   │   │                             runs it through the ingestion pipeline.
-│   │   │                             STUB until Session 9.
+│   │   │                             LIVE (Session 9). Supports mock=true for local dev.
 │   │   │
 │   │   ├── models.py               ← GET /api/models — live Ollama model list + role
 │   │   │                             assignments + per-role health booleans.
@@ -227,8 +227,9 @@ lako/
 │       │                             wired — uses vision_model from config, never hardcoded.
 │       │
 │       ├── confluence_client.py    ← Fetches a Confluence page by URL using the Confluence
-│       │                             REST API. Parses the HTML body using BeautifulSoup.
-│       │                             STUB until Session 9.
+│       │                             REST API (v2 Cloud + v1 Server/DC fallback). Parses HTML
+│       │                             into ~500-token chunks via BeautifulSoup. Mock mode.
+│       │                             LIVE (Session 9).
 │       │
 │       └── parsers/                ← One file per document format.
 │           ├── pdf_parser.py       ← PyMuPDF text extraction + image extraction per page.
@@ -309,8 +310,9 @@ lako/
 │       │   │                           Shows live progress bar and chunk count on completion.
 │       │   │
 │       │   ├── ConfluenceIngestion.jsx ← /ingest/confluence route.
-│       │   │                             URL input form. Paste a Confluence page URL,
-│       │   │                             click Ingest. STUB until Session 9.
+│       │   │                             URL input, optional API token, mock toggle.
+│       │   │                             Progress shimmer, success (chunk count), error + retry.
+│       │   │                             LIVE (Session 9).
 │       │   │
 │       │   ├── VectorDB.jsx        ← /vector route.
 │       │   │                         Shows ChromaDB stats: status, total chunks,
@@ -442,7 +444,7 @@ All endpoints are prefixed with `/api`. The FastAPI Swagger UI at `http://localh
 | POST | `/api/rag/query` | STUB | Send a question. LAKO searches documents, injects results, returns answer + sources. |
 | POST | `/api/ingest/docs` | LIVE | Upload PDF, TXT, XLSX, DOCX, or PPTX files. Saves to `/storage/uploads/`, runs full parse → chunk → embed → store pipeline in background. Returns `job_id`. |
 | GET | `/api/ingest/status` | LIVE | Poll ingestion progress. Pass `?job_id=...`. Returns `status`, `progress` (0–100), `message`, and `chunk_count` when complete. |
-| POST | `/api/ingest/confluence` | STUB | Pass a Confluence page URL. LAKO fetches and ingests it. |
+| POST | `/api/ingest/confluence` | LIVE | Pass `url` + optional `api_token`. Fetches page, parses HTML, embeds, stores in ChromaDB. Add `mock: true` to test without a real Confluence instance. |
 | GET | `/api/vector/status` | LIVE | Returns ChromaDB health, collection name, total chunks, and storage path. |
 | DELETE | `/api/vector/clear` | LIVE | Deletes all chunks from the collection. Returns count of deleted chunks. Collection is recreated empty immediately. |
 
@@ -612,6 +614,25 @@ The Eye icon appears when `/vision|image/i.test(statusMessage)` is true — it t
 ---
 
 ## What "STUB" Means
+
+## Session 9 — Technical Decisions Made
+
+### Confluence Cloud v2 → v1 API fallback
+`confluence_client.fetch_page()` first tries the Confluence Cloud v2 REST API (`/wiki/api/v2/pages/{id}?body-format=storage`). If that returns 404 (Server/DC installations don't have v2), it automatically retries with the v1 API (`/wiki/rest/api/content/{id}?expand=body.storage`). This makes the same client work against both Atlassian Cloud and self-hosted Confluence without any configuration.
+
+### HTML chunking: heading prefix strategy
+The HTML parser maintains a `current_heading` variable that tracks the most recent heading element. Every non-heading chunk (paragraph, list, table) is prefixed with the heading text before being stored. When the chunk is retrieved in isolation during RAG search, it still has enough context to be understood — a paragraph about "Credit limits" becomes "Credit Risk Policy\nCredit limits above EUR 500K require..." rather than a decontextualised fragment.
+
+### Extra metadata fields in ChromaDB
+`chroma_client.add_chunks()` previously only stored 4 hardcoded fields: `filename`, `page`, `chunk_type`, `timestamp`. Session 9 changes it to first spread all provided metadata fields, then override with the 4 core fields to ensure correct types. This lets Confluence chunks store `source`, `url`, `title`, `author`, `updated` alongside the standard fields — no schema migration needed, existing PDF chunks are unaffected.
+
+### Source field propagation to frontend
+`rag_engine.py` now includes `source` and `url` fields in every source citation dict. `SourceCitations.jsx` uses these to: (1) show a globe icon instead of a document icon for Confluence sources, (2) render the filename as a clickable external link when `url` is present. PDF sources are unchanged — `url` is `""` and the document icon is shown.
+
+### Mock mode for local dev
+`POST /api/ingest/confluence` accepts `mock: true` in the request body. When set, it skips the HTTP call entirely and returns a realistic set of 6 chunks representing a Rabobank risk management policy page. This lets the full frontend flow be tested (progress, success state, chunk count, RAG retrieval) without needing a real Confluence instance.
+
+---
 
 ## Session 8 — Technical Decisions Made
 
