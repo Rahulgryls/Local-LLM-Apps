@@ -1,14 +1,13 @@
 """
 LAKO — RAG Router
-POST /api/rag/query
-RAG query — returns answer + source metadata.
-Session 8: Fully implemented.
+POST /api/rag/query      — streaming RAG (NDJSON): tokens arrive live, sources at end
+POST /api/rag/query/sync — non-streaming RAG: full JSON response (for API/testing)
 """
 
 import logging
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -19,15 +18,15 @@ router = APIRouter()
 
 class RAGRequest(BaseModel):
     query: str
-    model: Optional[str] = None  # Override primary model
-    top_k: Optional[int] = None  # Override config top_k
+    model: Optional[str] = None
+    top_k: Optional[int] = None
     use_rag: bool = True
 
 
 class SourceChunk(BaseModel):
     filename: str
     page: int
-    chunk_type: str  # text / table / image-caption
+    chunk_type: str
     score: float
     content: str
 
@@ -42,9 +41,49 @@ class RAGResponse(BaseModel):
 @router.post("/rag/query")
 async def rag_query(request: RAGRequest):
     """
-    RAG query: embed question → hybrid search (vector + BM25) → inject chunks → ask LLM.
-    Returns answer with source citations (filename, page, chunk_type, score, content).
-    All exceptions are caught and returned as readable JSON errors — never a raw 500.
+    Streaming RAG endpoint — returns NDJSON stream.
+    Each line is a JSON object:
+      {"t":"token","v":"<token>"}  — LLM token (stream these to display)
+      {"t":"sources","v":[...]}    — source citations (shown after answer)
+      {"t":"error","v":"<msg>"}    — on failure
+
+    use_rag=false: falls back to plain streaming chat (no retrieval).
+    """
+    if not request.use_rag:
+        # Direct streaming chat — no retrieval
+        from services.ollama_client import ollama_client
+        from config import get_config
+        import json
+
+        effective_model = request.model or get_config()["primary_model"]
+
+        async def direct_stream():
+            try:
+                async for token in ollama_client.stream_chat(
+                    request.query, model=effective_model
+                ):
+                    yield json.dumps({"t": "token", "v": token}) + "\n"
+                yield json.dumps({"t": "sources", "v": []}) + "\n"
+            except Exception as exc:
+                yield json.dumps({"t": "error", "v": str(exc)}) + "\n"
+
+        return StreamingResponse(direct_stream(), media_type="application/x-ndjson")
+
+    return StreamingResponse(
+        rag_engine.stream_query(
+            question=request.query,
+            model=request.model,
+            top_k=request.top_k,
+        ),
+        media_type="application/x-ndjson",
+    )
+
+
+@router.post("/rag/query/sync")
+async def rag_query_sync(request: RAGRequest):
+    """
+    Non-streaming RAG — returns full JSON response.
+    Useful for API clients, testing via Swagger UI.
     """
     try:
         result = await rag_engine.query(
@@ -60,7 +99,7 @@ async def rag_query(request: RAGRequest):
             rag_used=result["rag_used"],
         )
     except Exception as exc:
-        logging.exception("RAG query failed")
+        logging.exception("RAG sync query failed")
         return JSONResponse(
             status_code=500,
             content={"error": str(exc), "detail": "RAG query failed — check backend logs."},

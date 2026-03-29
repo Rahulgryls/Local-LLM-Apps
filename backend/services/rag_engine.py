@@ -6,8 +6,9 @@ Session 8: Core pipeline.
 Session 8 (post): Hybrid search, query expansion, RRF fusion.
 """
 
+import json
 import logging
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 
 from services.embedder import embedder
 from services.chroma_client import chroma_client
@@ -104,6 +105,67 @@ class RAGEngine:
             "model":    effective_model,
             "rag_used": True,
         }
+
+    # ── Streaming RAG ───────────────────────────────────────────────────────
+
+    async def stream_query(
+        self,
+        question: str,
+        model: Optional[str] = None,
+        top_k: Optional[int] = None,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Streaming RAG pipeline — yields NDJSON lines:
+          {"t":"token","v":"<token>"}   — one per LLM token as it arrives
+          {"t":"sources","v":[...]}     — source citations, sent after last token
+          {"t":"error","v":"<msg>"}     — on failure
+
+        Retrieval happens first (~2-3s), then tokens stream immediately.
+        The user sees the answer building word-by-word instead of waiting
+        for the full response.
+        """
+        config = get_config()
+        effective_model = model or config["primary_model"]
+        effective_top_k = top_k or config["top_k"]
+
+        try:
+            # Retrieval phase (fast: embed + BM25 + ChromaDB)
+            expanded = self._expand_query(question)
+            chunks = await self._hybrid_search(
+                query=expanded,
+                top_k=effective_top_k,
+                threshold=config["similarity_threshold"],
+            )
+
+            if not chunks:
+                yield json.dumps({"t": "token", "v": "This information was not found in the knowledge base."}) + "\n"
+                yield json.dumps({"t": "sources", "v": []}) + "\n"
+                return
+
+            prompt = self._build_prompt(question, chunks)
+
+            # Stream LLM tokens
+            async for token in ollama_client.stream_chat(
+                prompt, model=effective_model, system=SYSTEM_PROMPT
+            ):
+                yield json.dumps({"t": "token", "v": token}) + "\n"
+
+            # Send sources after last token
+            sources = [
+                {
+                    "filename":   c["metadata"]["filename"],
+                    "page":       c["metadata"]["page"],
+                    "chunk_type": c["metadata"]["chunk_type"],
+                    "score":      c["score"],
+                    "content":    c["document"],
+                }
+                for c in chunks
+            ]
+            yield json.dumps({"t": "sources", "v": sources}) + "\n"
+
+        except Exception as exc:
+            logging.exception("RAG stream_query failed")
+            yield json.dumps({"t": "error", "v": str(exc)}) + "\n"
 
     # ── Hybrid search ───────────────────────────────────────────────────────
 

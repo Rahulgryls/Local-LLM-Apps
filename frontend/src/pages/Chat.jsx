@@ -3,6 +3,7 @@
  * Single-session stateless chat interface.
  * RAG toggle on/off, model selector, streaming response, source citations.
  * Session 8: Fully implemented.
+ * Post-session 8: Both RAG ON and OFF now stream via NDJSON — tokens appear live.
  */
 
 import React, { useState } from 'react'
@@ -10,6 +11,49 @@ import { useTranslation } from 'react-i18next'
 import { Send, Loader, RotateCcw } from 'lucide-react'
 import SourceCitations from '../components/SourceCitations'
 import useAppStore from '../store/appStore'
+
+/**
+ * Parse an NDJSON stream from a fetch Response.
+ * Calls onToken(str) for each token, onSources(arr) when sources arrive,
+ * onError(str) if an error line is received.
+ */
+async function readNDJSONStream(response, { onToken, onSources, onError }) {
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    // Keep last (potentially incomplete) line in buffer
+    buffer = lines.pop()
+
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const msg = JSON.parse(line)
+        if (msg.t === 'token') onToken(msg.v)
+        else if (msg.t === 'sources') onSources(msg.v)
+        else if (msg.t === 'error') onError(msg.v)
+      } catch {
+        // Ignore malformed lines
+      }
+    }
+  }
+
+  // Flush remaining buffer
+  if (buffer.trim()) {
+    try {
+      const msg = JSON.parse(buffer)
+      if (msg.t === 'token') onToken(msg.v)
+      else if (msg.t === 'sources') onSources(msg.v)
+      else if (msg.t === 'error') onError(msg.v)
+    } catch {}
+  }
+}
 
 export default function Chat() {
   const { t } = useTranslation()
@@ -19,10 +63,10 @@ export default function Chat() {
   const [answer, setAnswer] = useState('')
   const [sources, setSources] = useState([])
   const [loading, setLoading] = useState(false)
+  const [streaming, setStreaming] = useState(false)
   const [useRag, setUseRag] = useState(true)
   const [selectedModel, setSelectedModel] = useState('')
 
-  // Empty string → backend uses config default (primary_model)
   const effectiveModel = selectedModel || undefined
 
   const handleClear = () => {
@@ -34,64 +78,40 @@ export default function Chat() {
   const handleSend = async () => {
     if (!prompt.trim() || loading) return
     setLoading(true)
+    setStreaming(false)
     setAnswer('')
     setSources([])
 
     try {
-      if (useRag) {
-        // ── RAG mode: retrieve + generate, returns full JSON ──────────
-        const res = await fetch('/api/rag/query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query: prompt,
-            model: effectiveModel,
-            use_rag: true,
-          }),
-        })
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          throw new Error(err.detail || 'RAG query failed')
-        }
-        const data = await res.json()
-        setAnswer(data.answer)
-        setSources(data.sources || [])
+      // Both RAG ON and OFF use /api/rag/query with NDJSON streaming
+      const res = await fetch('/api/rag/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: prompt,
+          model: effectiveModel,
+          use_rag: useRag,
+        }),
+      })
 
-      } else {
-        // ── Direct streaming chat ─────────────────────────────────────
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt,
-            model: effectiveModel,
-            stream: true,
-          }),
-        })
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          throw new Error(err.detail || 'Chat request failed')
-        }
-
-        const reader = res.body.getReader()
-        const decoder = new TextDecoder()
-        let accumulated = ''
-
-        while (true) {
-          const { value, done } = await reader.read()
-          if (done) break
-          accumulated += decoder.decode(value, { stream: true })
-          setAnswer(accumulated)
-        }
-        // Flush any remaining bytes
-        accumulated += decoder.decode()
-        setAnswer(accumulated)
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || err.error || 'Request failed')
       }
+
+      setStreaming(true)
+
+      await readNDJSONStream(res, {
+        onToken: (token) => setAnswer(prev => prev + token),
+        onSources: (srcs) => setSources(srcs),
+        onError: (msg) => setAnswer(prev => prev || ('Error: ' + msg)),
+      })
 
     } catch (err) {
       setAnswer('Error: ' + err.message)
     } finally {
       setLoading(false)
+      setStreaming(false)
     }
   }
 
@@ -131,7 +151,6 @@ export default function Chat() {
             ))}
         </select>
 
-        {/* Clear button — only visible when there is content to clear */}
         {(answer || prompt) && (
           <button
             onClick={handleClear}
@@ -145,14 +164,17 @@ export default function Chat() {
 
       {/* Answer area */}
       <div className="min-h-40 bg-gray-900 border border-gray-800 rounded-xl p-4">
-        {loading ? (
+        {loading && !streaming ? (
           <div className="flex items-center gap-2 text-gray-500 text-sm">
             <Loader size={14} className="animate-spin" />
             {useRag ? 'Searching knowledge base...' : 'Thinking...'}
           </div>
         ) : answer ? (
           <>
-            <p className="text-gray-100 text-sm leading-relaxed whitespace-pre-wrap">{answer}</p>
+            <p className="text-gray-100 text-sm leading-relaxed whitespace-pre-wrap">
+              {answer}
+              {streaming && <span className="inline-block w-1.5 h-3.5 bg-blue-400 ml-0.5 animate-pulse align-middle" />}
+            </p>
             <SourceCitations sources={sources} />
           </>
         ) : (
