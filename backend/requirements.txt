@@ -33,3 +33,6 @@ pillow                    # Image conversion for vision model inputs
 
 # ── Hybrid Search ──────────────────────────────────────────
 rank_bm25                 # BM25 keyword index — used alongside vector search (RRF fusion)
+
+# ── Query Cache ────────────────────────────────────────────
+cachetools                # TTLCache for LRU query result caching

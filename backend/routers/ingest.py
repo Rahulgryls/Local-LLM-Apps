@@ -31,6 +31,7 @@ from services.chroma_client import chroma_client
 from services.vision_service import vision_service
 from services.bm25_index import bm25_index
 from services.activity_log import activity_log
+from services.rag_engine import invalidate_query_cache
 
 router = APIRouter()
 
@@ -144,11 +145,14 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
 
     total_files = len(file_data)
     total_chunks = 0
+    # Per-file chunk counts for accurate activity logging
+    file_chunk_counts: dict = {}
 
     try:
         for file_index, fd in enumerate(file_data):
             filename = fd["filename"]
             content = fd["content"]
+            file_chunk_counts[filename] = 0
             file_base = file_index / total_files        # 0.0 → 1.0
             file_top = (file_index + 1) / total_files   # 0.0 → 1.0
 
@@ -233,6 +237,13 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
 
             if not text_blocks and not tables and not image_captions:
                 _set_job(job_id, progress=pct(1.0), message=f"No content found in {filename} — skipped")
+                activity_log.append(
+                    event_type="pdf",
+                    title=filename,
+                    chunks_indexed=0,
+                    status="failed",
+                    error="No extractable text content found (image-only file?)",
+                )
                 continue
 
             extracted = {
@@ -248,6 +259,13 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
 
             if not chunks:
                 _set_job(job_id, progress=pct(1.0), message=f"No chunks produced for {filename} — skipped")
+                activity_log.append(
+                    event_type="pdf",
+                    title=filename,
+                    chunks_indexed=0,
+                    status="failed",
+                    error="Chunker produced no chunks",
+                )
                 continue
 
             _set_job(job_id, progress=pct(0.50), message=f"Chunked into {len(chunks)} chunk(s)")
@@ -280,9 +298,16 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                 for chunk, emb in zip(chunks, embeddings)
             ]
             chroma_client.add_chunks(chroma_chunks)
+            file_chunk_counts[filename] = len(chroma_chunks)
             total_chunks += len(chroma_chunks)
             bm25_index.mark_dirty()   # trigger BM25 rebuild on next query
             _set_job(job_id, progress=pct(1.0), message=f"Stored {len(chroma_chunks)} chunks from {filename}")
+            activity_log.append(
+                event_type="pdf",
+                title=filename,
+                chunks_indexed=len(chroma_chunks),
+                status="success",
+            )
 
         # ── All files done ────────────────────────────────────────────────
         _jobs[job_id].update({
@@ -291,14 +316,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             "chunk_count": total_chunks,
             "message": f"Done. {total_chunks} chunk(s) indexed across {total_files} file(s).",
         })
-        # Log each file as a separate activity entry
-        for fd in file_data:
-            activity_log.append(
-                event_type="pdf",
-                title=fd["filename"],
-                chunks_indexed=total_chunks // total_files if total_files else 0,
-                status="success",
-            )
+        invalidate_query_cache()   # new docs may change answers
 
     except Exception as e:
         _jobs[job_id].update({
@@ -306,14 +324,16 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             "progress": _jobs[job_id].get("progress", 0),
             "message": str(e),
         })
+        # Log any files that hadn't been logged yet as failed
         for fd in file_data:
-            activity_log.append(
-                event_type="pdf",
-                title=fd["filename"],
-                chunks_indexed=0,
-                status="failed",
-                error=str(e),
-            )
+            if fd["filename"] not in file_chunk_counts:
+                activity_log.append(
+                    event_type="pdf",
+                    title=fd["filename"],
+                    chunks_indexed=0,
+                    status="failed",
+                    error=str(e),
+                )
 
 
 def _set_job(job_id: str, **kwargs):

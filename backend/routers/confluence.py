@@ -20,6 +20,7 @@ from services.embedder import embedder
 from services.chroma_client import chroma_client
 from services.bm25_index import bm25_index
 from services.activity_log import activity_log
+from services.rag_engine import invalidate_query_cache
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -221,6 +222,7 @@ async def _run_confluence_pipeline(
             return
 
         bm25_index.mark_dirty()
+        invalidate_query_cache()   # new docs may change answers
 
         # ── Done ─────────────────────────────────────────────────────────────
         chunks_count = len(chroma_chunks)
