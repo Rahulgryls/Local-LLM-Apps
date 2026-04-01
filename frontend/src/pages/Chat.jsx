@@ -3,7 +3,7 @@
  * Single-session stateless chat interface.
  * RAG toggle on/off, model selector, streaming response, source citations.
  * Session 8: Fully implemented.
- * Post-session 8: Both RAG ON and OFF now stream via NDJSON — tokens appear live.
+ * Session 12: Full i18n (EN + NL).
  */
 
 import React, { useState, useEffect } from 'react'
@@ -143,7 +143,7 @@ export default function Chat() {
           >
             <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${useRag ? 'translate-x-4' : 'translate-x-0.5'}`} />
           </div>
-          RAG {useRag ? 'ON' : 'OFF'}
+          {useRag ? t('chat.ragOn') : t('chat.ragOff')}
         </label>
 
         {/* Model selector — all installed Ollama models */}
@@ -152,7 +152,7 @@ export default function Chat() {
           onChange={e => setSelectedModel(e.target.value)}
           className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-blue-400 font-mono focus:outline-none focus:border-blue-600"
         >
-          <option value="">{primaryModel || 'qwen3.5:9b'} (default)</option>
+          <option value="">{primaryModel || 'qwen3.5:35b-a3b-coding-nvfp4'} (default)</option>
           {availableModels.map(m => (
             <option key={m.name} value={m.name}>{m.name}</option>
           ))}
@@ -164,7 +164,7 @@ export default function Chat() {
             className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors ml-auto"
           >
             <RotateCcw size={12} />
-            Clear
+            {t('chat.clear')}
           </button>
         )}
       </div>
@@ -174,7 +174,7 @@ export default function Chat() {
         {loading && !streaming ? (
           <div className="flex items-center gap-2 text-gray-500 text-sm">
             <Loader size={14} className="animate-spin" />
-            {useRag ? 'Searching knowledge base...' : 'Thinking...'}
+            {useRag ? t('chat.searching') : t('chat.thinking')}
           </div>
         ) : answer ? (
           <>
@@ -185,7 +185,7 @@ export default function Chat() {
             <SourceCitations sources={sources} />
           </>
         ) : (
-          <p className="text-gray-600 text-sm">Your answer will appear here.</p>
+          <p className="text-gray-600 text-sm">{t('chat.answerPlaceholder')}</p>
         )}
       </div>
 
@@ -195,7 +195,7 @@ export default function Chat() {
           value={prompt}
           onChange={e => setPrompt(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={t('chat.placeholder') || 'Ask a question about your documents...'}
+          placeholder={t('chat.placeholder')}
           rows={3}
           className="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-600 resize-none focus:outline-none focus:border-blue-600 transition-colors"
         />

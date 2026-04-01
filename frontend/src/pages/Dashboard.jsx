@@ -2,9 +2,11 @@
  * LAKO — Dashboard Page
  * Real-time system stats: vector DB, models, ingestion activity.
  * Session 11: Full rewrite with live data from /api/dashboard/*.
+ * Session 12: Full i18n (EN + NL).
  */
 
 import React, { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   RefreshCw, Database, FileText, Key, Server,
   CheckCircle, XCircle, Globe, WifiOff, AlertCircle,
@@ -17,10 +19,10 @@ import useDashboard from '../hooks/useDashboard'
 function relativeTime(isoString) {
   if (!isoString) return '—'
   const diff = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000)
-  if (diff < 60)  return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)}d ago`
+  if (diff < 60)  return `${diff}s`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`
+  return `${Math.floor(diff / 86400)}d`
 }
 
 function secondsAgo(date) {
@@ -48,11 +50,11 @@ function ModelRow({ label, name, healthy }) {
   )
 }
 
-function ActivityTable({ activity }) {
+function ActivityTable({ activity, t }) {
   if (!activity || activity.length === 0) {
     return (
       <div className="text-center py-8 text-gray-600 text-sm">
-        No ingestion activity yet
+        {t('dashboard.noActivity')}
       </div>
     )
   }
@@ -62,11 +64,11 @@ function ActivityTable({ activity }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-xs text-gray-500 border-b border-gray-800">
-            <th className="pb-2 pr-4 font-medium">Type</th>
-            <th className="pb-2 pr-4 font-medium">Title</th>
-            <th className="pb-2 pr-4 font-medium text-right">Chunks</th>
-            <th className="pb-2 pr-4 font-medium">Status</th>
-            <th className="pb-2 font-medium text-right">Time</th>
+            <th className="pb-2 pr-4 font-medium">{t('dashboard.colType')}</th>
+            <th className="pb-2 pr-4 font-medium">{t('dashboard.colTitle')}</th>
+            <th className="pb-2 pr-4 font-medium text-right">{t('dashboard.colChunks')}</th>
+            <th className="pb-2 pr-4 font-medium">{t('dashboard.colStatus')}</th>
+            <th className="pb-2 font-medium text-right">{t('dashboard.colTime')}</th>
           </tr>
         </thead>
         <tbody>
@@ -91,12 +93,12 @@ function ActivityTable({ activity }) {
                 {entry.status === 'success' ? (
                   <span className="inline-flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">
                     <CheckCircle size={10} />
-                    Success
+                    {t('dashboard.success')}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">
                     <XCircle size={10} />
-                    Failed
+                    {t('dashboard.failed')}
                   </span>
                 )}
               </td>
@@ -114,6 +116,7 @@ function ActivityTable({ activity }) {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
+  const { t } = useTranslation()
   const { stats, activity, isLoading, error, refresh, lastUpdated } = useDashboard()
   const [secondsSince, setSecondsSince] = useState(null)
 
@@ -134,11 +137,11 @@ export default function Dashboard() {
     <div className="max-w-5xl space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-white">System Dashboard</h2>
+        <h2 className="text-lg font-semibold text-white">{t('dashboard.title')}</h2>
         <div className="flex items-center gap-3">
           {lastUpdated && secondsSince !== null && (
             <span className="text-xs text-gray-600">
-              Updated {secondsSince}s ago
+              {t('dashboard.updatedAgo', { count: secondsSince })}
             </span>
           )}
           <button
@@ -147,7 +150,7 @@ export default function Dashboard() {
             className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-gray-800 text-gray-400 hover:text-white disabled:opacity-50 transition-colors"
           >
             <RefreshCw size={12} className={isLoading ? 'animate-spin' : ''} />
-            Refresh
+            {t('dashboard.refresh')}
           </button>
         </div>
       </div>
@@ -164,36 +167,38 @@ export default function Dashboard() {
       {stats && !ollama && (
         <div className="flex items-center gap-2 text-xs text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 rounded-lg px-4 py-3">
           <WifiOff size={13} />
-          Ollama is unreachable. Start Ollama and refresh.
+          {t('dashboard.ollamaUnreachable')}
         </div>
       )}
 
       {/* Top row — stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
-          title="Total Chunks"
+          title={t('dashboard.totalChunks')}
           value={isLoading ? '—' : (vdb?.total_chunks ?? 0).toLocaleString()}
           subtitle={`${(vdb?.sources?.pdf ?? 0)} PDF · ${(vdb?.sources?.confluence ?? 0)} Confluence`}
           icon={<Database size={16} />}
           color="blue"
         />
         <StatCard
-          title="Documents Indexed"
+          title={t('dashboard.documentsIndexed')}
           value={isLoading ? '—' : (vdb?.total_documents ?? 0)}
-          subtitle={vdb?.last_updated ? `Last: ${relativeTime(vdb.last_updated)}` : 'No documents yet'}
+          subtitle={vdb?.last_updated
+            ? t('dashboard.last', { time: relativeTime(vdb.last_updated) })
+            : t('dashboard.noDocumentsYet')}
           icon={<FileText size={16} />}
           color="green"
         />
         <StatCard
-          title="Active API Keys"
+          title={t('dashboard.activeApiKeys')}
           value={isLoading ? '—' : (keys?.active ?? 0)}
-          subtitle={`${keys?.total ?? 0} total`}
+          subtitle={t('dashboard.total', { count: keys?.total ?? 0 })}
           icon={<Key size={16} />}
           color="amber"
         />
         <StatCard
-          title="Ollama"
-          value={isLoading ? '—' : (ollama ? 'Online' : 'Offline')}
+          title={t('dashboard.ollama')}
+          value={isLoading ? '—' : (ollama ? t('dashboard.online') : t('dashboard.offline'))}
           subtitle={models?.primary ?? ''}
           icon={<Server size={16} />}
           color={ollama ? 'green' : 'red'}
@@ -207,7 +212,7 @@ export default function Dashboard() {
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
           <div className="flex items-center gap-2">
             <Database size={15} className="text-blue-400" />
-            <h3 className="text-sm font-semibold text-white">Knowledge Base</h3>
+            <h3 className="text-sm font-semibold text-white">{t('dashboard.knowledgeBase')}</h3>
           </div>
           {isLoading ? (
             <div className="space-y-2">
@@ -219,13 +224,13 @@ export default function Dashboard() {
             <>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-xs text-gray-500">PDF chunks</p>
+                  <p className="text-xs text-gray-500">{t('dashboard.pdfChunks')}</p>
                   <p className="text-xl font-bold text-white mt-0.5">
                     {(vdb?.sources?.pdf ?? 0).toLocaleString()}
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-gray-500">Confluence chunks</p>
+                  <p className="text-xs text-gray-500">{t('dashboard.confluenceChunks')}</p>
                   <p className="text-xl font-bold text-white mt-0.5">
                     {(vdb?.sources?.confluence ?? 0).toLocaleString()}
                   </p>
@@ -258,8 +263,8 @@ export default function Dashboard() {
 
               <p className="text-xs text-gray-600">
                 {vdb?.last_updated
-                  ? `Last updated: ${relativeTime(vdb.last_updated)}`
-                  : 'No documents indexed yet'}
+                  ? t('dashboard.lastUpdatedAt', { time: relativeTime(vdb.last_updated) })
+                  : t('dashboard.noDocuments')}
               </p>
             </>
           )}
@@ -269,10 +274,10 @@ export default function Dashboard() {
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-1">
           <div className="flex items-center gap-2 mb-3">
             <Server size={15} className="text-blue-400" />
-            <h3 className="text-sm font-semibold text-white">Models</h3>
+            <h3 className="text-sm font-semibold text-white">{t('dashboard.models')}</h3>
             {!ollama && !isLoading && (
               <span className="ml-auto text-xs text-red-400 flex items-center gap-1">
-                <WifiOff size={11} /> Ollama unreachable
+                <WifiOff size={11} /> {t('dashboard.ollamaUnreachableShort')}
               </span>
             )}
           </div>
@@ -284,9 +289,9 @@ export default function Dashboard() {
             </div>
           ) : (
             <>
-              <ModelRow label="Primary LLM"      name={models?.primary    ?? '—'} healthy={ollama ? true : false} />
-              <ModelRow label="Vision Model"     name={models?.vision     ?? '—'} healthy={ollama ? true : false} />
-              <ModelRow label="Embedding Model"  name={models?.embeddings ?? '—'} healthy={ollama ? true : false} />
+              <ModelRow label={t('dashboard.primaryLlm')}     name={models?.primary    ?? '—'} healthy={ollama ? true : false} />
+              <ModelRow label={t('dashboard.visionModel')}    name={models?.vision     ?? '—'} healthy={ollama ? true : false} />
+              <ModelRow label={t('dashboard.embeddingModel')} name={models?.embeddings ?? '—'} healthy={ollama ? true : false} />
             </>
           )}
         </div>
@@ -295,12 +300,12 @@ export default function Dashboard() {
       {/* Recent Activity */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-white">Recent Activity</h3>
+          <h3 className="text-sm font-semibold text-white">{t('dashboard.recentActivity')}</h3>
           {stats?.ingestion && (
             <div className="flex items-center gap-3 text-xs text-gray-500">
-              <span className="text-green-400">{stats.ingestion.successful} succeeded</span>
+              <span className="text-green-400">{t('dashboard.succeeded', { count: stats.ingestion.successful })}</span>
               {stats.ingestion.failed > 0 && (
-                <span className="text-red-400">{stats.ingestion.failed} failed</span>
+                <span className="text-red-400">{t('dashboard.failedCount', { count: stats.ingestion.failed })}</span>
               )}
             </div>
           )}
@@ -312,7 +317,7 @@ export default function Dashboard() {
             ))}
           </div>
         ) : (
-          <ActivityTable activity={activity} />
+          <ActivityTable activity={activity} t={t} />
         )}
       </div>
     </div>

@@ -3,15 +3,21 @@
  * Displays source chunks returned with each RAG answer.
  * Shows: filename, page number, chunk type, relevance score.
  * Session 1: Shell — wired in Session 8.
+ * Session 12: Full i18n (EN + NL).
  */
 
 import React, { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ChevronDown, ChevronUp, FileText, Globe } from 'lucide-react'
 
 export default function SourceCitations({ sources = [] }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
 
   if (!sources || sources.length === 0) return null
+
+  const count = sources.length
+  const usedLabel = count === 1 ? t('sources.used', { count }) : t('sources.usedPlural', { count })
 
   return (
     <div className="mt-3 border border-gray-700 rounded-lg overflow-hidden">
@@ -21,7 +27,7 @@ export default function SourceCitations({ sources = [] }) {
       >
         <span className="flex items-center gap-2">
           <FileText size={13} />
-          {sources.length} source{sources.length !== 1 ? 's' : ''} used
+          {usedLabel}
         </span>
         {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
       </button>
@@ -43,12 +49,15 @@ export default function SourceCitations({ sources = [] }) {
                   }
                 </span>
                 <span className="text-gray-500">
-                  {src.source === 'confluence' ? 'Confluence' : `p.${src.page}`} · {src.chunk_type}
+                  {src.source === 'confluence'
+                    ? 'Confluence'
+                    : t('sources.page', { page: src.page })
+                  } · {src.chunk_type}
                 </span>
               </div>
               <p className="text-gray-500 line-clamp-2">{src.content}</p>
               <span className="text-blue-500 mt-1 block">
-                score: {(src.score * 100).toFixed(1)}%
+                {t('sources.score')}: {(src.score * 100).toFixed(1)}%
               </span>
             </div>
           ))}

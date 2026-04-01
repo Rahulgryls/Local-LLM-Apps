@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 13 complete — 2026-04-01
+**Last updated:** Session 12 complete — 2026-04-01
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -668,6 +668,25 @@ The "last updated X seconds ago" counter increments every second using `setInter
 The Ollama StatCard uses `color="green"` when status is healthy and `color="red"` when unreachable. All other cards have fixed colors (blue, green, amber). This is the only dynamic color assignment — it uses the same `color` prop mechanism as all other cards, requiring no conditional CSS classes in the Dashboard component.
 
 ---
+
+---
+
+## Session 12 — Technical Decisions Made
+
+### Flat translation files vs nested locale directory
+The session spec described `locales/en/translation.json` subdirectories, but the project already had `i18n/en.json` and `i18n/nl.json` flat files loaded directly by `i18n.js`. Rather than restructuring the directory layout (which would require changing import paths and adding no functional benefit), the existing flat files were expanded in-place. All keys follow the same namespaced structure (`dashboard.totalChunks`, `confluence.ingestButton`, etc.) as the spec — only the file path is flatter.
+
+### localStorage persistence without i18next-browser-languagedetector
+The spec required browser language detection on first visit and localStorage persistence on change. Rather than adding another npm dependency (`i18next-browser-languagedetector`), `i18n.js` handles both in four lines: reads `localStorage.getItem('lako-language')`, falls back to `navigator.language?.slice(0, 2) === 'nl' ? 'nl' : 'en'`, initialises i18next with that value, then calls `i18n.on('languageChanged', ...)` to persist every future change. This keeps the bundle lean and the logic visible.
+
+### LanguageSwitcher as a standalone component, not inline in Header
+`LanguageSwitcher.jsx` is a separate component (two pill buttons, blue active state) imported by `Header.jsx`. This separation means: (1) the switcher is independently testable, (2) Header stays small and layout-only, (3) the switcher can be moved to a different location without touching Header logic. The old `toggleLanguage` function in Header (which cycled EN↔NL) was replaced by the two explicit buttons, which are more discoverable for new users.
+
+### t() calls pass through all model names and product names untranslated
+`nomic-embed-text`, `qwen3.5:35b-a3b-coding-nvfp4`, `ChromaDB`, `Ollama`, `Confluence` are rendered as literals in JSX, never wrapped in `t()`. Translation keys cover only user-facing labels, messages, and UI copy. This prevents accidental translation of technical identifiers that are meaningless in Dutch anyway.
+
+### Sub-components receive `t` as a prop, not re-importing useTranslation
+`ActivityTable` in Dashboard.jsx, `GenerateKeyModal` and `KeysTable` in Settings.jsx, and `LanguageSwitcher` all receive `t` from their parent rather than calling `useTranslation()` themselves. This is because these components are defined in the same file as their parent and already share the translation context — adding separate `useTranslation()` calls would work but creates redundant hook calls per render.
 
 ---
 

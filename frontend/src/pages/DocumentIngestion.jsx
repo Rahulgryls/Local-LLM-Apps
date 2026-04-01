@@ -3,6 +3,7 @@
  * File upload UI for PDF, TXT, XLSX, DOCX, PPTX.
  * Wires to POST /api/ingest/docs, polls GET /api/ingest/status every 3s.
  * Session 5: Fully wired.
+ * Session 12: Full i18n (EN + NL).
  */
 
 import React, { useState, useRef, useEffect } from 'react'
@@ -75,7 +76,7 @@ export default function DocumentIngestion() {
       } catch {
         stopPolling()
         setStatus('error')
-        setStatusMessage('Cannot reach backend.')
+        setStatusMessage(t('common.backendError'))
       }
     }, 3000)
   }
@@ -120,19 +121,29 @@ export default function DocumentIngestion() {
 
     } catch (err) {
       setStatus('error')
-      setStatusMessage('Cannot reach backend. Is the server running?')
+      setStatusMessage(t('common.backendError'))
     }
   }
 
   const progressLabel = () => {
-    if (status === 'complete') return `Ingestion complete — ${chunkCount} chunks indexed`
-    if (status === 'error') return 'Ingestion failed'
-    return statusMessage || 'Processing...'
+    if (status === 'complete') return `${t('documents.complete')} — ${chunkCount} ${t('documents.chunksIndexed')}`
+    if (status === 'error') return t('documents.failed')
+    return statusMessage || t('documents.ingesting')
+  }
+
+  const ingestButtonLabel = () => {
+    if (status === 'uploading' || status === 'processing') return t('documents.ingesting')
+    if (files.length > 0) {
+      const count = files.length
+      const word = count === 1 ? t('documents.file') : t('documents.files')
+      return `${t('documents.ingestFiles').split(' ')[0]} ${count} ${word}`
+    }
+    return t('documents.ingestFiles')
   }
 
   return (
     <div className="max-w-2xl space-y-5">
-      <h2 className="text-lg font-semibold text-white">Document Ingestion</h2>
+      <h2 className="text-lg font-semibold text-white">{t('documents.title')}</h2>
 
       {/* Drop zone */}
       <div
@@ -143,9 +154,10 @@ export default function DocumentIngestion() {
       >
         <Upload size={28} className="text-gray-600 mx-auto mb-3" />
         <p className="text-sm text-gray-400">
-          Drop files here or <span className="text-blue-400">click to browse</span>
+          {t('documents.dropzoneText')}{' '}
+          <span className="text-blue-400">{t('documents.browse')}</span>
         </p>
-        <p className="text-xs text-gray-600 mt-1">Supported: PDF, TXT, XLSX, DOCX, PPTX</p>
+        <p className="text-xs text-gray-600 mt-1">{t('documents.supported')}</p>
         <input
           ref={fileRef}
           type="file"
@@ -191,13 +203,13 @@ export default function DocumentIngestion() {
       {status === 'complete' && (
         <div className="flex items-center gap-2 text-green-400 text-sm">
           <CheckCircle size={15} />
-          {chunkCount} chunk{chunkCount !== 1 ? 's' : ''} indexed successfully.
+          {t('documents.chunksSuccess', { count: chunkCount })}
         </div>
       )}
       {status === 'error' && (
         <div className="flex items-center gap-2 text-red-400 text-sm">
           <XCircle size={15} />
-          {statusMessage || 'Ingestion failed. Check backend logs.'}
+          {statusMessage || t('documents.failed')}
         </div>
       )}
 
@@ -207,9 +219,7 @@ export default function DocumentIngestion() {
         disabled={!files.length || status === 'uploading' || status === 'processing'}
         className="w-full py-2.5 bg-blue-600 rounded-xl text-sm text-white font-medium hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
       >
-        {status === 'uploading' || status === 'processing'
-          ? 'Ingesting...'
-          : `Ingest ${files.length > 0 ? `${files.length} file${files.length !== 1 ? 's' : ''}` : 'Files'}`}
+        {ingestButtonLabel()}
       </button>
     </div>
   )

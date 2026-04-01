@@ -3,9 +3,11 @@
  * Ingest a single Confluence page by URL into the knowledge base.
  * Session 9: Full implementation.
  * Session 11: Converted to async polling — POST returns job_id, polls status every 2s.
+ * Session 12: Full i18n (EN + NL).
  */
 
 import React, { useState, useRef, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Globe, CheckCircle, XCircle, Loader, RefreshCw, Lock } from 'lucide-react'
 import ProgressBar from '../components/ProgressBar'
 
@@ -13,17 +15,19 @@ const PLACEHOLDER_URL = 'https://yourbank.atlassian.net/wiki/spaces/KB/pages/123
 const POLL_INTERVAL_MS = 2000
 
 export default function ConfluenceIngestion() {
+  const { t } = useTranslation()
+
   const [url, setUrl]             = useState('')
   const [apiToken, setApiToken]   = useState('')
   const [showToken, setShowToken] = useState(false)
   const [useMock, setUseMock]     = useState(false)
 
-  const [status, setStatus]         = useState('idle')    // idle | queued | processing | complete | failed
-  const [progress, setProgress]     = useState(0)
+  const [status, setStatus]               = useState('idle')    // idle | queued | processing | complete | failed
+  const [progress, setProgress]           = useState(0)
   const [statusMessage, setStatusMessage] = useState('')
   const [chunksIndexed, setChunksIndexed] = useState(0)
-  const [pageTitle, setPageTitle]   = useState('')
-  const [errorMsg, setErrorMsg]     = useState('')
+  const [pageTitle, setPageTitle]         = useState('')
+  const [errorMsg, setErrorMsg]           = useState('')
 
   const pollRef = useRef(null)
 
@@ -63,12 +67,12 @@ export default function ConfluenceIngestion() {
         } else if (data.status === 'failed') {
           stopPolling()
           setStatus('failed')
-          setErrorMsg(data.error || data.message || 'Ingestion failed.')
+          setErrorMsg(data.error || data.message || t('confluence.failed'))
         }
       } catch {
         stopPolling()
         setStatus('failed')
-        setErrorMsg('Cannot reach backend.')
+        setErrorMsg(t('common.backendError'))
       }
     }, POLL_INTERVAL_MS)
   }
@@ -122,7 +126,7 @@ export default function ConfluenceIngestion() {
       startPolling(data.job_id)
     } catch {
       setStatus('failed')
-      setErrorMsg('Cannot reach backend. Is the server running?')
+      setErrorMsg(t('common.backendError'))
     }
   }
 
@@ -131,15 +135,13 @@ export default function ConfluenceIngestion() {
   return (
     <div className="max-w-2xl space-y-5">
       <div>
-        <h2 className="text-lg font-semibold text-white">Confluence Page Ingestion</h2>
-        <p className="text-sm text-gray-500 mt-1">
-          Enter the URL of a Confluence page to fetch, parse, and index its content into the knowledge base.
-        </p>
+        <h2 className="text-lg font-semibold text-white">{t('confluence.title')}</h2>
+        <p className="text-sm text-gray-500 mt-1">{t('confluence.subtitle')}</p>
       </div>
 
       {/* URL input */}
       <div className="space-y-1.5">
-        <label className="text-xs text-gray-400 font-medium">Confluence Page URL</label>
+        <label className="text-xs text-gray-400 font-medium">{t('confluence.urlLabel')}</label>
         <div className="relative">
           <Globe size={14} className="absolute left-3 top-3 text-gray-500 pointer-events-none" />
           <input
@@ -162,14 +164,14 @@ export default function ConfluenceIngestion() {
           className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
         >
           <Lock size={11} />
-          {showToken ? 'Hide API token' : 'Add API token (for private pages)'}
+          {showToken ? t('confluence.hideToken') : t('confluence.addToken')}
         </button>
         {showToken && (
           <input
             type="password"
             value={apiToken}
             onChange={e => setApiToken(e.target.value)}
-            placeholder="Bearer token or personal access token"
+            placeholder={t('confluence.tokenPlaceholder')}
             disabled={isActive}
             className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-600 transition-colors disabled:opacity-50"
           />
@@ -185,14 +187,14 @@ export default function ConfluenceIngestion() {
           disabled={isActive}
           className="rounded border-gray-600 bg-gray-900 text-blue-600 focus:ring-blue-600"
         />
-        Use mock data (test without a real Confluence instance)
+        {t('confluence.mockMode')}
       </label>
 
-      {/* Progress bar — shown while processing or after */}
+      {/* Progress bar — shown while processing */}
       {status !== 'idle' && status !== 'complete' && status !== 'failed' && (
         <div className="space-y-1">
           <div className="flex justify-between text-xs text-gray-400">
-            <span>{statusMessage || 'Processing...'}</span>
+            <span>{statusMessage || t('confluence.processing')}</span>
             <span>{progress}%</span>
           </div>
           <ProgressBar progress={progress} />
@@ -204,17 +206,21 @@ export default function ConfluenceIngestion() {
         <div className="rounded-xl border border-green-800 bg-green-950/30 px-4 py-3 space-y-2">
           <div className="flex items-center gap-2 text-green-400 text-sm font-medium">
             <CheckCircle size={15} />
-            Successfully indexed {chunksIndexed} chunk{chunksIndexed !== 1 ? 's' : ''}
+            {t('confluence.successPrefix')} {chunksIndexed} {chunksIndexed !== 1 ? t('confluence.chunks') : t('confluence.chunk')}
           </div>
           <div className="text-xs text-gray-400 space-y-0.5">
-            {pageTitle && <p><span className="text-gray-500">Page:</span> {pageTitle}</p>}
+            {pageTitle && (
+              <p>
+                <span className="text-gray-500">{t('confluence.page')}:</span> {pageTitle}
+              </p>
+            )}
           </div>
           <button
             onClick={reset}
             className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors mt-1"
           >
             <RefreshCw size={11} />
-            Ingest another page
+            {t('confluence.ingestAnother')}
           </button>
         </div>
       )}
@@ -224,7 +230,7 @@ export default function ConfluenceIngestion() {
         <div className="rounded-xl border border-red-800 bg-red-950/30 px-4 py-3 space-y-2">
           <div className="flex items-center gap-2 text-red-400 text-sm font-medium">
             <XCircle size={15} />
-            Ingestion failed
+            {t('confluence.failed')}
           </div>
           <p className="text-xs text-red-300/80">{errorMsg}</p>
           <button
@@ -232,7 +238,7 @@ export default function ConfluenceIngestion() {
             className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors"
           >
             <RefreshCw size={11} />
-            Try again
+            {t('confluence.retry')}
           </button>
         </div>
       )}
@@ -245,8 +251,8 @@ export default function ConfluenceIngestion() {
           className="w-full py-2.5 bg-blue-600 rounded-xl text-sm text-white font-medium hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
         >
           {isActive
-            ? <><Loader size={14} className="animate-spin" /> Ingesting...</>
-            : 'Ingest Page'
+            ? <><Loader size={14} className="animate-spin" /> {t('confluence.ingesting')}</>
+            : t('confluence.ingestButton')
           }
         </button>
       )}

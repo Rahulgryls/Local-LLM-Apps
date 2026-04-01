@@ -5,9 +5,11 @@
  * Saves via POST /api/config.
  * API Gateway section: full key management (generate, list, revoke, delete).
  * Session 3: Config wired. Session 10: API key management added.
+ * Session 12: Full i18n (EN + NL).
  */
 
 import React, { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   Save, RefreshCw, Plus, Trash2, Ban, Copy, Check,
   Eye, EyeOff, Key, ChevronDown, ChevronUp,
@@ -31,7 +33,7 @@ function Field({ label, name, value, onChange, type = 'text', placeholder = '' }
   )
 }
 
-function ModelSelect({ label, name, value, onChange, models }) {
+function ModelSelect({ label, name, value, onChange, models, notInstalledText }) {
   return (
     <div>
       <label className="block text-xs text-gray-500 mb-1">{label}</label>
@@ -42,7 +44,7 @@ function ModelSelect({ label, name, value, onChange, models }) {
         className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-600 transition-colors"
       >
         {!models.find(m => m.name === value) && (
-          <option value={value}>{value} (not installed)</option>
+          <option value={value}>{value} ({notInstalledText})</option>
         )}
         {models.map(m => (
           <option key={m.name} value={m.name}>
@@ -81,20 +83,20 @@ function CopyButton({ text }) {
   )
 }
 
-function GenerateKeyModal({ onClose, onCreated }) {
+function GenerateKeyModal({ onClose, onCreated, t }) {
   const [name, setName]         = useState('')
   const [perms, setPerms]       = useState({ query: true, ingest: false })
   const [loading, setLoading]   = useState(false)
-  const [result, setResult]     = useState(null)   // {key, id, prefix}
+  const [result, setResult]     = useState(null)
   const [error, setError]       = useState('')
   const [showKey, setShowKey]   = useState(false)
 
   const togglePerm = (p) => setPerms(prev => ({ ...prev, [p]: !prev[p] }))
 
   const handleGenerate = async () => {
-    if (!name.trim()) { setError('Name is required.'); return }
+    if (!name.trim()) { setError(t('common.nameRequired')); return }
     const selectedPerms = Object.entries(perms).filter(([, v]) => v).map(([k]) => k)
-    if (!selectedPerms.length) { setError('Select at least one permission.'); return }
+    if (!selectedPerms.length) { setError(t('common.selectPerm')); return }
     setLoading(true)
     setError('')
     try {
@@ -108,7 +110,7 @@ function GenerateKeyModal({ onClose, onCreated }) {
       setResult(data)
       onCreated()
     } catch {
-      setError('Cannot reach backend.')
+      setError(t('common.backendError'))
     } finally {
       setLoading(false)
     }
@@ -119,18 +121,18 @@ function GenerateKeyModal({ onClose, onCreated }) {
       <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md p-6 space-y-4">
         {!result ? (
           <>
-            <h3 className="text-sm font-semibold text-white">Generate New API Key</h3>
+            <h3 className="text-sm font-semibold text-white">{t('settings.generateKey')}</h3>
 
             <Field
-              label="Consumer Name (e.g. CRM System, Data Pipeline)"
+              label={t('settings.keyNameLabel')}
               name="name"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="My Integration"
+              placeholder={t('settings.keyNamePlaceholder')}
             />
 
             <div>
-              <label className="block text-xs text-gray-500 mb-2">Permissions</label>
+              <label className="block text-xs text-gray-500 mb-2">{t('settings.permissions')}</label>
               <div className="flex gap-3">
                 {['query', 'ingest'].map(p => (
                   <label key={p} className="flex items-center gap-2 cursor-pointer text-sm text-gray-300">
@@ -140,7 +142,7 @@ function GenerateKeyModal({ onClose, onCreated }) {
                       onChange={() => togglePerm(p)}
                       className="rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-600"
                     />
-                    {p === 'query' ? 'Query (read)' : 'Ingest (write)'}
+                    {p === 'query' ? t('settings.queryPerm') : t('settings.ingestPerm')}
                   </label>
                 ))}
               </div>
@@ -151,25 +153,25 @@ function GenerateKeyModal({ onClose, onCreated }) {
             <div className="flex gap-2 pt-1">
               <button onClick={onClose}
                 className="flex-1 py-2 bg-gray-800 rounded-xl text-sm text-gray-300 hover:bg-gray-700 transition-colors">
-                Cancel
+                {t('settings.cancel')}
               </button>
               <button onClick={handleGenerate} disabled={loading}
                 className="flex-1 py-2 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
                 {loading ? <RefreshCw size={13} className="animate-spin" /> : <Key size={13} />}
-                Generate
+                {t('settings.generate')}
               </button>
             </div>
           </>
         ) : (
           <>
-            <h3 className="text-sm font-semibold text-white">API Key Created</h3>
+            <h3 className="text-sm font-semibold text-white">{t('settings.keyCreated')}</h3>
             <div className="rounded-xl bg-amber-950/40 border border-amber-700/50 px-4 py-3 text-xs text-amber-300 space-y-1">
-              <p className="font-semibold">⚠️ Save this key now.</p>
-              <p>It will never be shown again. If lost, delete it and generate a new one.</p>
+              <p className="font-semibold">{t('settings.keyWarning1')}</p>
+              <p>{t('settings.keyWarning2')}</p>
             </div>
 
             <div>
-              <label className="block text-xs text-gray-500 mb-1.5">API Key</label>
+              <label className="block text-xs text-gray-500 mb-1.5">{t('settings.apiKeyLabel')}</label>
               <div className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
                 <code className={`flex-1 text-xs text-green-400 break-all font-mono ${showKey ? '' : 'blur-sm select-none'}`}>
                   {result.key}
@@ -183,12 +185,12 @@ function GenerateKeyModal({ onClose, onCreated }) {
 
             <div className="text-xs text-gray-500 space-y-0.5">
               <p><span className="text-gray-600">ID:</span> {result.id}</p>
-              <p><span className="text-gray-600">Prefix:</span> {result.prefix}…</p>
+              <p><span className="text-gray-600">{t('settings.colPrefix')}:</span> {result.prefix}…</p>
             </div>
 
             <button onClick={onClose}
               className="w-full py-2.5 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-500 transition-colors">
-              Done
+              {t('settings.done')}
             </button>
           </>
         )}
@@ -197,12 +199,10 @@ function GenerateKeyModal({ onClose, onCreated }) {
   )
 }
 
-function KeysTable({ keys, onRevoke, onDelete }) {
+function KeysTable({ keys, onRevoke, onDelete, t }) {
   if (!keys.length) {
     return (
-      <p className="text-xs text-gray-600 py-3">
-        No API keys yet. Generate one to enable gateway access.
-      </p>
+      <p className="text-xs text-gray-600 py-3">{t('settings.noKeys')}</p>
     )
   }
 
@@ -213,8 +213,16 @@ function KeysTable({ keys, onRevoke, onDelete }) {
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-gray-800 bg-gray-900/60">
-            {['Name', 'Prefix', 'Permissions', 'Created', 'Last Used', 'Status', ''].map(h => (
-              <th key={h} className="text-left px-3 py-2 text-gray-500 font-medium">{h}</th>
+            {[
+              t('settings.colName'),
+              t('settings.colPrefix'),
+              t('settings.colPermissions'),
+              t('settings.colCreated'),
+              t('settings.colLastUsed'),
+              t('settings.colStatus'),
+              '',
+            ].map((h, i) => (
+              <th key={i} className="text-left px-3 py-2 text-gray-500 font-medium">{h}</th>
             ))}
           </tr>
         </thead>
@@ -235,7 +243,7 @@ function KeysTable({ keys, onRevoke, onDelete }) {
                 <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
                   k.is_active ? 'bg-green-900/50 text-green-400' : 'bg-gray-800 text-gray-500'
                 }`}>
-                  {k.is_active ? 'Active' : 'Revoked'}
+                  {k.is_active ? t('settings.activeStatus') : t('settings.revokedStatus')}
                 </span>
               </td>
               <td className="px-3 py-2.5">
@@ -277,10 +285,12 @@ const EMPTY_SETTINGS = {
 }
 
 export default function Settings() {
+  const { t } = useTranslation()
+
   const [settings, setSettings]   = useState(EMPTY_SETTINGS)
   const [models, setModels]       = useState([])
   const [loading, setLoading]     = useState(true)
-  const [saveState, setSaveState] = useState('idle')   // idle | saving | saved | error
+  const [saveState, setSaveState] = useState('idle')
   const [errorMsg, setErrorMsg]   = useState('')
 
   // API keys state
@@ -303,7 +313,7 @@ export default function Settings() {
       setSettings(prev => ({ ...prev, ...config }))
       setModels(modelsData.models || [])
     } catch {
-      setErrorMsg('Could not load settings from backend.')
+      setErrorMsg(t('common.backendError'))
     } finally {
       setLoading(false)
     }
@@ -351,13 +361,13 @@ export default function Settings() {
   }
 
   const handleRevoke = async (id) => {
-    if (!confirm('Revoke this API key? It will stop working immediately.')) return
+    if (!confirm(t('settings.confirmRevoke'))) return
     await fetch(`/api/admin/keys/${id}/revoke`, { method: 'PATCH' })
     loadKeys()
   }
 
   const handleDelete = async (id) => {
-    if (!confirm('Permanently delete this API key?')) return
+    if (!confirm(t('settings.confirmDelete'))) return
     await fetch(`/api/admin/keys/${id}`, { method: 'DELETE' })
     loadKeys()
   }
@@ -366,51 +376,53 @@ export default function Settings() {
     return (
       <div className="flex items-center gap-2 text-gray-500 text-sm">
         <RefreshCw size={14} className="animate-spin" />
-        Loading settings...
+        {t('settings.loading')}
       </div>
     )
   }
 
+  const notInstalledText = t('settings.notInstalled')
+
   return (
     <div className="max-w-2xl space-y-6">
-      <h2 className="text-lg font-semibold text-white">Settings</h2>
+      <h2 className="text-lg font-semibold text-white">{t('settings.title')}</h2>
 
       {/* Model Configuration */}
       <section>
         <h3 className="text-sm font-semibold text-gray-300 mb-3 border-b border-gray-800 pb-2">
-          Model Configuration
+          {t('settings.modelConfig')}
         </h3>
         <div className="space-y-3">
-          <ModelSelect label="Primary LLM"      name="primary_model"   value={settings.primary_model}   onChange={handleChange} models={models} />
-          <ModelSelect label="Vision Model"     name="vision_model"    value={settings.vision_model}    onChange={handleChange} models={models} />
-          <ModelSelect label="Embedding Model"  name="embedding_model" value={settings.embedding_model} onChange={handleChange} models={models} />
-          <Field       label="Ollama URL"       name="ollama_url"      value={settings.ollama_url}      onChange={handleChange} />
+          <ModelSelect label={t('settings.primaryLlm')}     name="primary_model"   value={settings.primary_model}   onChange={handleChange} models={models} notInstalledText={notInstalledText} />
+          <ModelSelect label={t('settings.visionModel')}    name="vision_model"    value={settings.vision_model}    onChange={handleChange} models={models} notInstalledText={notInstalledText} />
+          <ModelSelect label={t('settings.embeddingModel')} name="embedding_model" value={settings.embedding_model} onChange={handleChange} models={models} notInstalledText={notInstalledText} />
+          <Field       label={t('settings.ollamaUrl')}      name="ollama_url"      value={settings.ollama_url}      onChange={handleChange} />
         </div>
       </section>
 
       {/* RAG Configuration */}
       <section>
         <h3 className="text-sm font-semibold text-gray-300 mb-3 border-b border-gray-800 pb-2">
-          RAG Configuration
+          {t('settings.ragConfig')}
         </h3>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Top-K Chunks"        name="top_k"                value={settings.top_k}                onChange={handleChange} type="number" />
-          <Field label="Similarity Threshold" name="similarity_threshold" value={settings.similarity_threshold} onChange={handleChange} type="number" />
+          <Field label={t('settings.topK')}     name="top_k"                value={settings.top_k}                onChange={handleChange} type="number" />
+          <Field label={t('settings.threshold')} name="similarity_threshold" value={settings.similarity_threshold} onChange={handleChange} type="number" />
         </div>
         <div className="mt-3">
-          <Field label="ChromaDB Path" name="chromadb_path" value={settings.chromadb_path} onChange={handleChange} />
+          <Field label={t('settings.chromadbPath')} name="chromadb_path" value={settings.chromadb_path} onChange={handleChange} />
         </div>
       </section>
 
       {/* Confluence */}
       <section>
         <h3 className="text-sm font-semibold text-gray-300 mb-3 border-b border-gray-800 pb-2">
-          Confluence
+          {t('settings.confluenceSection')}
         </h3>
         <div className="space-y-3">
-          <Field label="Confluence URL" name="confluence_url"   value={settings.confluence_url}   onChange={handleChange} />
-          <Field label="Email"          name="confluence_email" value={settings.confluence_email} onChange={handleChange} type="email" />
-          <Field label="API Token"      name="confluence_token" value={settings.confluence_token} onChange={handleChange} type="password" placeholder="Paste token here" />
+          <Field label={t('settings.confluenceUrl')} name="confluence_url"   value={settings.confluence_url}   onChange={handleChange} />
+          <Field label={t('settings.email')}         name="confluence_email" value={settings.confluence_email} onChange={handleChange} type="email" />
+          <Field label={t('settings.apiToken')}      name="confluence_token" value={settings.confluence_token} onChange={handleChange} type="password" placeholder={t('settings.tokenPlaceholder')} />
         </div>
       </section>
 
@@ -422,7 +434,7 @@ export default function Settings() {
         className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
       >
         <Save size={14} />
-        {saveState === 'saving' ? 'Saving...' : saveState === 'saved' ? 'Saved!' : 'Save Settings'}
+        {saveState === 'saving' ? t('settings.saving') : saveState === 'saved' ? t('settings.saved') : t('settings.save')}
       </button>
 
       {/* API Gateway */}
@@ -433,7 +445,7 @@ export default function Settings() {
         >
           <span className="flex items-center gap-2">
             <Key size={14} />
-            REST API Gateway — API Keys
+            {t('settings.apiGatewayTitle')}
           </span>
           {keysExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </button>
@@ -449,8 +461,8 @@ export default function Settings() {
 
             <div className="flex items-center justify-between">
               <span className="text-xs text-gray-500">
-                {apiKeys.length} key{apiKeys.length !== 1 ? 's' : ''} ·{' '}
-                {apiKeys.filter(k => k.is_active).length} active
+                {apiKeys.length} {apiKeys.length !== 1 ? t('settings.keysOf') : t('settings.keyOf')} ·{' '}
+                {apiKeys.filter(k => k.is_active).length} {t('settings.active')}
               </span>
               <div className="flex gap-2">
                 <button onClick={loadKeys} title="Refresh"
@@ -460,15 +472,15 @@ export default function Settings() {
                 <button onClick={() => setShowModal(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 rounded-lg text-xs text-white hover:bg-blue-500 transition-colors">
                   <Plus size={12} />
-                  Generate Key
+                  {t('settings.generateKeyBtn')}
                 </button>
               </div>
             </div>
 
-            <KeysTable keys={apiKeys} onRevoke={handleRevoke} onDelete={handleDelete} />
+            <KeysTable keys={apiKeys} onRevoke={handleRevoke} onDelete={handleDelete} t={t} />
 
             <div className="rounded-lg bg-gray-900 border border-gray-800 px-3 py-2 text-xs text-gray-600 space-y-0.5">
-              <p className="font-medium text-gray-500">Example usage</p>
+              <p className="font-medium text-gray-500">{t('settings.exampleUsage')}</p>
               <code className="text-gray-500 block">
                 curl -X POST http://localhost:8000/api/gateway/query \
               </code>
@@ -487,6 +499,7 @@ export default function Settings() {
         <GenerateKeyModal
           onClose={() => setShowModal(false)}
           onCreated={loadKeys}
+          t={t}
         />
       )}
     </div>
