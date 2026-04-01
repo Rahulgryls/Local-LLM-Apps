@@ -6,7 +6,9 @@ Session 12: Model pre-warming on startup, enhanced /health endpoint.
 """
 
 import logging
+import time
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Tracks whether the primary model responded to the warm-up ping
 _model_ready: dict = {"ready": False, "model": ""}
+_startup_time: float = time.time()
 
 
 @asynccontextmanager
@@ -91,11 +94,36 @@ async def root():
 @app.get("/health", tags=["Health"])
 async def health():
     """
-    Extended health check.
-    model_ready = True means the primary LLM responded to the startup warm-up.
+    Extended health check — returns full system status.
     """
+    config = get_config()
+    from services.chroma_client import chroma_client
+    from services.rag_engine import _query_cache
+
+    # ChromaDB chunk count
+    try:
+        stats = chroma_client.get_stats()
+        chromadb_chunks = stats.get("total_chunks", 0)
+    except Exception:
+        chromadb_chunks = 0
+
+    # Ollama version
+    ollama_version = "unknown"
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            r = await client.get(f"{config['ollama_url']}/api/version")
+            if r.status_code == 200:
+                ollama_version = r.json().get("version", "unknown")
+    except Exception:
+        pass
+
     return {
-        "status":      "healthy",
-        "model_ready": _model_ready["ready"],
-        "model":       _model_ready["model"],
+        "status":          "healthy",
+        "model_ready":     _model_ready["ready"],
+        "model":           _model_ready["model"] or config["primary_model"],
+        "ollama_version":  ollama_version,
+        "chromadb_chunks": chromadb_chunks,
+        "embedding_model": config["embedding_model"],
+        "uptime_seconds":  int(time.time() - _startup_time),
+        "cache_size":      len(_query_cache),
     }

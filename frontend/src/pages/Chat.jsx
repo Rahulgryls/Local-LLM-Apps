@@ -17,7 +17,7 @@ import useAppStore from '../store/appStore'
  * Calls onToken(str) for each token, onSources(arr) when sources arrive,
  * onError(str) if an error line is received.
  */
-async function readNDJSONStream(response, { onToken, onSources, onError }) {
+async function readNDJSONStream(response, { onToken, onSources, onError, onMeta }) {
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -38,6 +38,7 @@ async function readNDJSONStream(response, { onToken, onSources, onError }) {
         if (msg.t === 'token') onToken(msg.v)
         else if (msg.t === 'sources') onSources(msg.v)
         else if (msg.t === 'error') onError(msg.v)
+        else if (msg.t === 'meta') onMeta && onMeta(msg.v)
       } catch {
         // Ignore malformed lines
       }
@@ -59,24 +60,34 @@ export default function Chat() {
   const { t } = useTranslation()
   const { primaryModel } = useAppStore()
 
+  const FALLBACK_MODEL = 'qwen3.5:35b-a3b-coding-nvfp4'
+
   const [prompt, setPrompt] = useState('')
   const [answer, setAnswer] = useState('')
   const [sources, setSources] = useState([])
   const [loading, setLoading] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const [useRag, setUseRag] = useState(true)
-  const [selectedModel, setSelectedModel] = useState('')
+  const [selectedModel, setSelectedModel] = useState(FALLBACK_MODEL)
   const [availableModels, setAvailableModels] = useState([])
+  const [intent, setIntent] = useState(null)
+  const [retrieval_mode, setRetrievalMode] = useState(null)
 
-  // Fetch installed Ollama models on mount so the selector is always populated
+  // Fetch chat-appropriate models on mount; pre-select the configured default
   useEffect(() => {
-    fetch('/api/models')
+    fetch('/api/models/chat')
       .then(r => r.json())
-      .then(data => setAvailableModels(data.models || []))
-      .catch(() => {})
+      .then(data => {
+        setAvailableModels(data.models || [])
+        if (data.default) setSelectedModel(data.default)
+      })
+      .catch(() => {
+        setAvailableModels([FALLBACK_MODEL])
+        setSelectedModel(FALLBACK_MODEL)
+      })
   }, [])
 
-  const effectiveModel = selectedModel || undefined
+  const effectiveModel = selectedModel || FALLBACK_MODEL
 
   const handleClear = () => {
     setPrompt('')
@@ -90,6 +101,8 @@ export default function Chat() {
     setStreaming(false)
     setAnswer('')
     setSources([])
+    setIntent(null)
+    setRetrievalMode(null)
 
     try {
       // Both RAG ON and OFF use /api/rag/query with NDJSON streaming
@@ -114,6 +127,10 @@ export default function Chat() {
         onToken: (token) => setAnswer(prev => prev + token),
         onSources: (srcs) => setSources(srcs),
         onError: (msg) => setAnswer(prev => prev || ('Error: ' + msg)),
+        onMeta: (meta) => {
+          if (meta.intent) setIntent(meta.intent)
+          if (meta.retrieval_mode) setRetrievalMode(meta.retrieval_mode)
+        },
       })
 
     } catch (err) {
@@ -146,15 +163,14 @@ export default function Chat() {
           {useRag ? t('chat.ragOn') : t('chat.ragOff')}
         </label>
 
-        {/* Model selector — all installed Ollama models */}
+        {/* Model selector — chat-appropriate models only */}
         <select
           value={selectedModel}
           onChange={e => setSelectedModel(e.target.value)}
           className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-blue-400 font-mono focus:outline-none focus:border-blue-600"
         >
-          <option value="">{primaryModel || 'qwen3.5:35b-a3b-coding-nvfp4'} (default)</option>
           {availableModels.map(m => (
-            <option key={m.name} value={m.name}>{m.name}</option>
+            <option key={m} value={m}>{m}</option>
           ))}
         </select>
 
@@ -169,6 +185,13 @@ export default function Chat() {
         )}
       </div>
 
+      {/* Multi-doc comparison badge — shown after a comparison query completes */}
+      {intent === 'comparison' && retrieval_mode === 'multi-doc' && (
+        <div className="text-xs text-gray-400 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 w-fit">
+          Multi-document comparison mode
+        </div>
+      )}
+
       {/* Answer area */}
       <div className="min-h-40 bg-gray-900 border border-gray-800 rounded-xl p-4">
         {loading && !streaming ? (
@@ -182,7 +205,7 @@ export default function Chat() {
               {answer}
               {streaming && <span className="inline-block w-1.5 h-3.5 bg-blue-400 ml-0.5 animate-pulse align-middle" />}
             </p>
-            <SourceCitations sources={sources} />
+            <SourceCitations sources={sources} retrieval_mode={retrieval_mode} />
           </>
         ) : (
           <p className="text-gray-600 text-sm">{t('chat.answerPlaceholder')}</p>

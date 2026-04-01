@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
 
 from services.rag_engine import rag_engine
 
@@ -36,6 +36,9 @@ class RAGResponse(BaseModel):
     sources: List[SourceChunk] = []
     model: str
     rag_used: bool
+    intent: Optional[str] = None            # "single" | "comparison" | "aggregation"
+    sub_queries: Optional[List[str]] = None # populated for multi-doc only
+    retrieval_mode: Optional[str] = None    # "standard" | "multi-doc"
 
 
 @router.post("/rag/query")
@@ -97,6 +100,9 @@ async def rag_query_sync(request: RAGRequest):
             sources=[SourceChunk(**s) for s in result["sources"]],
             model=result["model"],
             rag_used=result["rag_used"],
+            intent=result.get("intent"),
+            sub_queries=result.get("sub_queries"),
+            retrieval_mode=result.get("retrieval_mode"),
         )
     except Exception as exc:
         logging.exception("RAG sync query failed")

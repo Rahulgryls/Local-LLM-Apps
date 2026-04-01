@@ -62,6 +62,39 @@ def _model_installed(config_name: str, installed_names: List[str]) -> bool:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+# Models excluded from the chat selector (embedding-only, deprecated, or specialist-only)
+_CHAT_BLOCKLIST = {"qwen2.5:3b", "qwen3.5:9b", "llava:13b", "nomic-embed-text"}
+
+
+@router.get("/models/chat")
+async def list_chat_models():
+    """
+    Returns only models appropriate for chat/query use.
+    Filters out embedding, deprecated, and specialist-only models.
+    Used by the Chat page model selector.
+    """
+    config = get_config()
+    default_model = config["primary_model"]
+
+    reachable = await ollama_client.health_check()
+    if not reachable:
+        return {"models": [default_model], "default": default_model}
+
+    raw_models = await ollama_client.list_models()
+    chat_models = [
+        m["name"]
+        for m in raw_models
+        if m["name"] not in _CHAT_BLOCKLIST
+        and not any(m["name"].startswith(b + ":") for b in _CHAT_BLOCKLIST)
+    ]
+
+    # Primary model always present even if Ollama hasn't indexed it yet
+    if default_model not in chat_models:
+        chat_models.insert(0, default_model)
+
+    return {"models": chat_models, "default": default_model}
+
+
 @router.get("/models", response_model=ModelsResponse)
 async def list_models():
     """

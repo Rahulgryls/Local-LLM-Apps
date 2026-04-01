@@ -211,9 +211,15 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                                 vision_service.describe_image_bytes(
                                     pg.ocr_png_bytes,
                                     prompt=(
-                                        "Extract all text from this scanned document page exactly as written, "
-                                        "preserving structure, tables, headings and formatting. "
-                                        "Output plain text only."
+                                        "You are processing a scanned document page for a bank knowledge system. "
+                                        "Extract ALL text visible in this image exactly as written. "
+                                        "Include every detail: names, dates, addresses, ID numbers, "
+                                        "reference numbers, stamps, official seals, signature labels, "
+                                        "form field labels and their values. "
+                                        "Preserve document structure using line breaks between separate fields. "
+                                        "If the text is in Dutch, extract it in Dutch — do not translate. "
+                                        "If the text is in multiple languages, extract all of it. "
+                                        "Output plain text only. No commentary, no explanations."
                                     ),
                                 ),
                                 timeout=60.0,
