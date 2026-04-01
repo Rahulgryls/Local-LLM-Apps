@@ -151,7 +151,7 @@ class OllamaClient:
     ) -> str:
         """
         POST /api/generate with images field — Vision model call.
-        Uses vision_model from config (llava:13b).
+        Uses vision_model from config (currently qwen3.5:35b-a3b-coding-nvfp4).
         stream=False — returns full response as a single string.
         """
         async with httpx.AsyncClient(timeout=60) as client:

@@ -14,8 +14,8 @@ CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.json"
 
 _DEFAULT_CONFIG = {
     "ollama_url": "http://localhost:11434",
-    "primary_model": "qwen3.5:9b",
-    "vision_model": "llava:13b",
+    "primary_model": "qwen3.5:35b-a3b-coding-nvfp4",
+    "vision_model": "qwen3.5:35b-a3b-coding-nvfp4",
     "embedding_model": "nomic-embed-text",
     "chromadb_path": "/lako/storage/chromadb",
     "confluence_url": "https://yourbank.atlassian.net",

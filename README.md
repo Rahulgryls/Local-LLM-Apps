@@ -4,7 +4,7 @@
 **Build:** 14 sessions / 4–5 weeks
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 11 complete — 2026-03-29
+**Last updated:** Session 13 complete — 2026-04-01
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -19,7 +19,7 @@ Everything runs on a server inside the bank. No question, no document, and no an
 **LAKO does five things:**
 1. **Ingests documents** — you upload PDFs, Word files, Excel sheets, PowerPoint decks, and text files. LAKO reads them, breaks them into searchable chunks, and stores them locally.
 2. **Ingests Confluence pages** — you paste a Confluence URL and LAKO fetches and stores that page's content.
-3. **Understands images and diagrams** — for PDFs with flowcharts or process diagrams, LAKO uses a local vision AI model to describe what the image shows, so diagrams become searchable text.
+3. **Understands images and diagrams** — for PDFs with flowcharts or process diagrams, and PowerPoint slides with image-only content, LAKO uses a local vision AI model to describe what the image shows, so diagrams become searchable text. Scanned PDFs with no selectable text are OCR'd by the same vision model for better Dutch-language accuracy.
 4. **Answers questions via RAG** — RAG (Retrieval-Augmented Generation) means: find the most relevant document chunks first, then ask the AI to answer the question *using only those chunks*. This prevents hallucination and grounds every answer in real documents.
 5. **Shows its sources** — every answer shows which document, which page, and which section it came from.
 
@@ -43,12 +43,13 @@ Everything runs on a server inside the bank. No question, no document, and no an
 | Styling | TailwindCSS | Utility-based CSS framework. Styles are applied by adding class names directly in the HTML — no separate CSS files needed. Gives LAKO its dark blue bank-appropriate look. |
 | State Management | Zustand | A small library that keeps track of the app's data in the browser — which models are available, ingestion progress, settings values. Think of it as the frontend's memory between page navigations. |
 | LLM Runtime | Ollama | The local AI model runner. Ollama downloads and serves AI models on your machine. LAKO talks to Ollama via its REST API at port 11434. Without Ollama, there is no AI. |
-| Primary LLM | qwen3.5:9b | The main language model used for answering questions. Qwen3.5 is made by Alibaba, trained on 119 languages including Dutch, with a 256K token context window. Chosen over llama3.1:8b specifically because Dutch language quality is critical for Rabobank. |
-| Vision Model | llava:13b | A multimodal model that can look at images. LAKO extracts images from PDFs and sends each one to llava, which describes what it sees. The description is then stored as text and becomes searchable. |
+| Primary LLM | qwen3.5:35b-a3b-coding-nvfp4 | The main language model for answering questions and vision tasks. Qwen3.5 is made by Alibaba, trained on 119 languages including Dutch, with a 256K token context window. Runs at ~112 tok/s on M5 Pro via Ollama 0.19 MLX. Handles text, code, and vision in a single model. |
+| Vision Model | qwen3.5:35b-a3b-coding-nvfp4 | Same model as primary — used for image description, PPTX slide rendering, and scanned PDF OCR. Single model for all tasks eliminates cold-start model switching. |
 | Embeddings | nomic-embed-text | Converts text into numerical vectors (lists of numbers). Two pieces of text that mean similar things will produce similar vectors. This is how ChromaDB can find relevant document chunks from a question — by comparing vector similarity. |
 | Vector DB | ChromaDB | A local database that stores document chunks as vectors. When you ask a question, LAKO converts your question to a vector and ChromaDB finds the stored chunks with the closest vectors. No Docker required — runs as a Python library. |
 | PDF Parsing | PyMuPDF (fitz) | Python library for reading PDFs. Extracts text page by page, and also extracts embedded images for vision processing. |
-| OCR Fallback | Tesseract | If a PDF is a scanned image rather than a text PDF, Tesseract runs optical character recognition to extract the text. This is the fallback when PyMuPDF finds no text. |
+| OCR Primary | qwen3.5 vision | Scanned PDF pages (< 50 chars extracted) are rendered as PNG and sent to the vision model with a text-extraction prompt. Significantly better Dutch-language quality than Tesseract. Session 13. |
+| OCR Fallback | Tesseract | Fallback if the vision model times out or errors. Still installed — `brew install tesseract`. |
 | Excel Parsing | openpyxl + pandas | openpyxl reads .xlsx files. pandas converts spreadsheet data into structured text that can be chunked and embedded. |
 | Word Parsing | python-docx | Reads .docx files — extracts paragraphs, headings, and table content. |
 | PPT Parsing | python-pptx | Reads .pptx files — extracts slide text and speaker notes. |
@@ -59,32 +60,28 @@ Everything runs on a server inside the bank. No question, no document, and no an
 
 ## Model Stack — Key Decisions
 
-### Why qwen3.5:9b (not llama3.1:8b)
+### Model stack (as of Session 13 — single-model consolidation)
 
-| Factor | llama3.1:8b | qwen3.5:9b |
+| Factor | Old stack (Session 11) | New stack (Session 13) |
 |---|---|---|
-| Dutch language (NL) | Decent | Excellent — 119 languages |
-| RAG context window | 128K tokens | 256K tokens |
-| Thinking mode | No | Yes |
-| RAM required | ~8.5 GB | ~9.3 GB |
+| Chat / RAG | qwen3.5:9b | qwen3.5:35b-a3b-coding-nvfp4 |
+| Vision | llava:13b | qwen3.5:35b-a3b-coding-nvfp4 (same) |
+| Embeddings | nomic-embed-text | nomic-embed-text (unchanged) |
+| Speed | ~40 tok/s | ~112 tok/s (Ollama 0.19 MLX on M5 Pro) |
+| Dutch quality | Good | Excellent — 119 languages, 256K context |
 
-**The deciding factor:** Rabobank documents mix Dutch and English. Qwen3.5 handles this significantly better. The 256K context window also means more document chunks can be injected into a single RAG prompt.
+**Why one model for everything:** Running two large models (qwen3.5:9b + llava:13b) required memory swapping as Ollama unloads one to load the other. `qwen3.5:35b-a3b-coding-nvfp4` is natively multimodal — the same model answers questions, describes images, renders PPTX slides, and OCRs scanned Dutch bank documents. Ollama 0.19 with MLX backend enables full M5 Pro ANE utilisation at 112 tok/s.
 
 **Vendor note:** Qwen is made by Alibaba (China). Since LAKO runs fully on-premises with zero external calls, no data reaches Alibaba. If Rabobank's vendor approval requires Meta (US) origin, `llama3.3:8b` is a drop-in alternative — one line in config.json.
-
-### Why llava:13b stays as Vision Model
-
-Qwen3.5 technically has vision capability, but the required vision files (mmproj files) do not yet work with Ollama's local serving architecture. llava:13b is Ollama-native, reliable, and well-tested for document diagram description.
 
 ### RAM usage on 48 GB MacBook
 
 | Scenario | Models Active | RAM Used |
 |---|---|---|
-| Chat / RAG query | qwen3.5:9b + nomic | ~9.3 GB |
-| Document ingestion | llava:13b + nomic | ~11.0 GB |
-| Worst case (all loaded) | all three | ~19.8 GB |
+| Chat / RAG / vision / OCR | qwen3.5:35b + nomic | ~22 GB |
+| Embeddings only | nomic-embed-text | ~0.5 GB |
 
-Ollama auto-unloads models after 5 minutes idle. The three models are almost never all in memory simultaneously.
+Single-model stack eliminates cold-start swapping. Ollama auto-unloads after 5 minutes idle.
 
 ---
 
@@ -104,9 +101,8 @@ Browser (React + Vite)
   Ollama      ChromaDB   File Storage
   :11434      (local)    /storage/uploads
     |
-  ■ qwen3.5:9b     — answers questions
-  ■ llava:13b      — describes images
-  ■ nomic-embed-text — converts text to vectors
+  ■ qwen3.5:35b-a3b-coding-nvfp4 — answers questions, describes images, OCRs scanned PDFs
+  ■ nomic-embed-text              — converts text to vectors
 ```
 
 **Request flow for a RAG question:**
@@ -218,13 +214,13 @@ lako/
 │       │                             No chunks above threshold → canned not-found message.
 │       │                             LIVE (Session 8).
 │       │
-│       ├── vision_service.py       ← Sends extracted images to llava:13b and gets back
-│       │                             a text description. Called during PDF ingestion when
-│       │                             an embedded diagram or image is found.
+│       ├── vision_service.py       ← Sends images to vision model (config: vision_model) and
+│       │                             gets back a text description. Called during PDF ingestion
+│       │                             for embedded images, scanned-page OCR, and PPTX slides.
 │       │                             LIVE (Session 7): describe_image_bytes() checks dims
 │       │                             via Pillow (min 100×100), base64-encodes, calls ollama.
-│       │                             describe_image_file() reads from disk. All three methods
-│       │                             wired — uses vision_model from config, never hardcoded.
+│       │                             Session 13: stale llava:13b references removed — model
+│       │                             always read from config, never hardcoded.
 │       │
 │       ├── confluence_client.py    ← Fetches a Confluence page by URL using the Confluence
 │       │                             REST API (v2 Cloud + v1 Server/DC fallback). Parses HTML
@@ -233,8 +229,12 @@ lako/
 │       │
 │       └── parsers/                ← One file per document format.
 │           ├── pdf_parser.py       ← PyMuPDF text extraction + image extraction per page.
-│           │                         Falls back to Tesseract OCR for scanned pages.
 │           │                         Session 5: Fully implemented.
+│           │                         Session 13: scanned pages flagged with ocr_mode="vision"
+│           │                         and rendered to PNG bytes (_vision_ocr_page). Vision OCR
+│           │                         runs async in ingest.py. _ocr_page_tesseract(png_bytes)
+│           │                         remains as fallback. ParsedPage gains ocr_mode +
+│           │                         ocr_png_bytes fields.
 │           ├── txt_parser.py       ← Plain text reader. Session 5: Fully implemented.
 │           ├── excel_parser.py     ← openpyxl + pandas. Each sheet → ParsedPage.
 │           │                         Pipe-separated table stored in page.tables so the
@@ -246,6 +246,9 @@ lako/
 │           └── ppt_parser.py       ← python-pptx. Each slide → ParsedPage.
 │                                     Title (# prefix) + text boxes + speaker notes.
 │                                     Session 6: Fully implemented.
+│                                     Session 13: _render_slides_to_images() — LibreOffice
+│                                     headless primary, Pillow shape-composite fallback.
+│                                     Image-only slides now produce chunks via vision pipeline.
 │
 ├── frontend/                       ← All React browser interface code
 │   ├── index.html                  ← The single HTML page. React mounts into <div id="root">.
@@ -421,8 +424,8 @@ Every setting LAKO uses comes from this one file. Edit it and restart the backen
 ```json
 {
   "ollama_url":           "http://localhost:11434",
-  "primary_model":        "qwen3.5:9b",
-  "vision_model":         "llava:13b",
+  "primary_model":        "qwen3.5:35b-a3b-coding-nvfp4",
+  "vision_model":         "qwen3.5:35b-a3b-coding-nvfp4",
   "embedding_model":      "nomic-embed-text",
   "chromadb_path":        "/lako/storage/chromadb",
   "confluence_url":       "https://yourbank.atlassian.net",
@@ -507,9 +510,8 @@ All endpoints are prefixed with `/api`. The FastAPI Swagger UI at `http://localh
 brew install python@3.11 node@20 git
 
 # 3. Install Ollama — download from https://ollama.com/download then:
-ollama pull qwen3.5:9b         # Primary LLM — ~9 GB download
-ollama pull llava:13b          # Vision model — ~10 GB download
-ollama pull nomic-embed-text   # Embeddings — ~0.5 GB download
+ollama pull qwen3.5:35b-a3b-coding-nvfp4   # Primary + vision model — ~22 GB
+ollama pull nomic-embed-text               # Embeddings — ~0.5 GB download
 ```
 
 ### Start backend
@@ -560,9 +562,9 @@ http://localhost:5173
 | 9 | Claude Code | COMPLETE | Confluence single page ingestion: URL parsing, REST client, HTML chunking, mock mode, SourceCitations globe icon |
 | 10 | Claude Code | COMPLETE | REST API gateway, API key auth: api_key_manager.py, gateway.py, admin.py, Settings.jsx key table + generate modal |
 | 11 | Claude Code | COMPLETE | Dashboard + async ingestion progress: activity_log.py, dashboard.py (stats + recent-activity), StatCard.jsx, useDashboard.js, Dashboard.jsx rewrite, ConfluenceIngestion async polling |
-| 12 | Claude Code | PENDING | i18n EN + NL, language toggle, Dutch translation files |
-| 13 | OpenClaw | PENDING | Full integration testing, auto bug fixing, cross-module wiring |
-| 14 | OpenClaw | PENDING | Edge case resolution, final cleanup, README update |
+| 12 | Claude Code | COMPLETE | i18n EN + NL: react-i18next, en.json + nl.json translation files, LanguageSwitcher.jsx EN/NL pill toggle, all pages + components use useTranslation hook, language persists in localStorage |
+| 13 | Claude Code | COMPLETE | Vision upgrade — single model pipeline: vision OCR for scanned PDFs (vision model primary, Tesseract fallback), PPTX slide vision pipeline (image-only slides now produce chunks), stale llava references removed, config.py defaults updated to qwen3.5:35b-a3b-coding-nvfp4 |
+| 14 | OpenClaw | PENDING | Edge case resolution, final cleanup |
 
 ---
 
@@ -664,6 +666,29 @@ The "last updated X seconds ago" counter increments every second using `setInter
 
 ### StatCard color tied to semantic state, not hardcoded
 The Ollama StatCard uses `color="green"` when status is healthy and `color="red"` when unreachable. All other cards have fixed colors (blue, green, amber). This is the only dynamic color assignment — it uses the same `color` prop mechanism as all other cards, requiring no conditional CSS classes in the Dashboard component.
+
+---
+
+---
+
+## Session 13 — Technical Decisions Made
+
+### Vision model as primary OCR for scanned PDFs
+Tesseract was the original OCR fallback but has poor quality on Dutch bank documents: it struggles with mixed Dutch/English text, formatted policy tables, and scanned headers. Session 13 inverts the priority: `_vision_ocr_page(page)` in `pdf_parser.py` renders the page as PNG (2x zoom via PyMuPDF pixmap) and returns the bytes without calling Tesseract at all. The async `ingest.py` pipeline calls `vision_service.describe_image_bytes()` with a specific extraction prompt ("Extract all text... preserving structure, tables, headings"). If the vision call times out or errors, `_ocr_page_tesseract(png_bytes)` is called as the fallback. Tesseract remains installed and functional — it is just no longer the primary path.
+
+### ParsedPage extended for async two-phase OCR
+`pdf_parser.parse()` is a synchronous function (no event loop), but the vision call is async. Rather than making the parser async (which would require changes throughout the stack), `ParsedPage` gains two new fields: `ocr_mode: str` (set to `"vision"` for scanned pages) and `ocr_png_bytes: Optional[bytes]` (the rendered PNG). The parser returns immediately with `page.text = ""` for scanned pages. `ingest.py`, which already runs in an async background task, then fills in the text by calling `vision_service.describe_image_bytes()` in a loop before building `text_blocks`. This decouples the sync parser from the async I/O without any architectural changes to the pipeline.
+
+### PPTX vision pipeline: LibreOffice primary, Pillow fallback
+python-pptx cannot render slides — it only reads XML. LibreOffice headless (`soffice --headless --convert-to png --outdir <tmpdir> <file>`) converts the entire PPTX to per-slide PNGs in under 2 seconds on M5 Pro. The output files are collected from the temp directory by globbing `*.png` (sorted by name for slide order), read to bytes, and returned. LibreOffice is at `/opt/homebrew/bin/soffice` on the dev Mac.
+
+The Pillow fallback extracts embedded picture shapes from each slide using python-pptx's `shape.shape_type == 13` check, composes them onto a white canvas scaled to the presentation's EMU dimensions at 96 DPI, and saves as PNG. This handles image-only slides even without LibreOffice. Text-only slides produce a blank canvas (their text is already captured by `parse()` into `text_blocks`).
+
+### Vision calls for PPTX supplement, not replace, text
+`image_captions` from the PPTX vision pipeline flows into `extracted["images"]` alongside existing PDF image captions. The chunker handles these identically to all other image captions. This means a slide with both text and an image gets two chunks: one text chunk (from `parse()`) and one vision chunk (from `_render_slides_to_images()`). Image-only slides that previously produced 0 chunks now produce ≥1 chunk from the vision description.
+
+### Log prefixes for observability
+All new log lines use prefixes: `[vision-ocr]` for scanned PDF OCR and `[pptx-vision]` for PPTX slide rendering. These make it easy to `grep` backend output during testing and to filter log noise during normal text-PDF ingestion.
 
 ---
 

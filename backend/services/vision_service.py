@@ -1,8 +1,8 @@
 """
 LAKO — Vision Service
 Processes images and diagrams extracted from documents.
-Sends image to llava:13b via Ollama → returns text description.
-Session 1: Stub — wired in Session 7.
+Sends image to vision model (config: vision_model) via Ollama → returns text description.
+Session 1: Stub — wired in Session 7. Session 13: model reference updated to config-driven.
 """
 
 import base64
@@ -22,11 +22,11 @@ VISION_PROMPT = (
 
 
 class VisionService:
-    """Describes images and diagrams using the local vision model (llava:13b)."""
+    """Describes images and diagrams using the local vision model (config: vision_model)."""
 
     async def describe_image_bytes(self, image_bytes: bytes, prompt: Optional[str] = None) -> str:
         """
-        Convert raw image bytes to base64, then call llava:13b for description.
+        Convert raw image bytes to base64, then call vision model for description.
         Raises ValueError if the image is smaller than 100x100 px.
         """
         img = PILImage.open(io.BytesIO(image_bytes))

@@ -4,6 +4,8 @@ POST /api/ingest/docs   — Upload files, run full ingestion pipeline in backgro
 GET  /api/ingest/status — Poll ingestion progress % by job_id
 Session 5: PDF + TXT pipeline implemented.
 Session 6: Excel, Word, PowerPoint parsers added.
+Session 13: Vision OCR for scanned PDFs (vision model primary, Tesseract fallback);
+             PPTX slide vision pipeline (image-only slides now produce chunks).
 """
 
 import asyncio
@@ -154,7 +156,6 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             content = fd["content"]
             file_chunk_counts[filename] = 0
             file_base = file_index / total_files        # 0.0 → 1.0
-            file_top = (file_index + 1) / total_files   # 0.0 → 1.0
 
             def pct(step_frac: float) -> int:
                 """Map a per-file fraction (0.0–1.0) to overall progress %."""
@@ -186,6 +187,54 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
 
             _set_job(job_id, progress=pct(0.30), message=f"Parsed {filename} ({parsed_doc.total_pages} page(s))")
 
+            # ── Step 2b: Vision OCR for scanned PDF pages ────────────────
+            # pdf_parser.parse() marks scanned pages with ocr_mode="vision".
+            # We call vision_service here (async) to fill in their text.
+            if ext == ".pdf":
+                scanned_pages = [pg for pg in parsed_doc.pages if pg.ocr_mode == "vision"]
+                if scanned_pages:
+                    _set_job(
+                        job_id,
+                        progress=pct(0.32),
+                        message=f"[vision-ocr] {len(scanned_pages)} scanned page(s) in {filename}...",
+                    )
+                    for pg in scanned_pages:
+                        logging.info(
+                            f"[vision-ocr] page {pg.page_number} of {parsed_doc.total_pages} ({filename})"
+                        )
+                        _set_job(
+                            job_id,
+                            message=f"[vision-ocr] page {pg.page_number} of {parsed_doc.total_pages}...",
+                        )
+                        try:
+                            pg.text = await asyncio.wait_for(
+                                vision_service.describe_image_bytes(
+                                    pg.ocr_png_bytes,
+                                    prompt=(
+                                        "Extract all text from this scanned document page exactly as written, "
+                                        "preserving structure, tables, headings and formatting. "
+                                        "Output plain text only."
+                                    ),
+                                ),
+                                timeout=60.0,
+                            )
+                        except asyncio.TimeoutError:
+                            logging.warning(
+                                f"[vision-ocr] timeout page {pg.page_number} — falling back to Tesseract"
+                            )
+                            try:
+                                pg.text = pdf_parser._ocr_page_tesseract(pg.ocr_png_bytes)
+                            except Exception as fb_exc:
+                                logging.warning(f"[vision-ocr] Tesseract fallback failed: {fb_exc}")
+                        except Exception as exc:
+                            logging.warning(
+                                f"[vision-ocr] error page {pg.page_number}: {exc} — falling back to Tesseract"
+                            )
+                            try:
+                                pg.text = pdf_parser._ocr_page_tesseract(pg.ocr_png_bytes)
+                            except Exception as fb_exc:
+                                logging.warning(f"[vision-ocr] Tesseract fallback failed: {fb_exc}")
+
             # ── Step 3: Build extracted dict for chunker ──────────────────
             text_blocks = []
             tables = []
@@ -196,8 +245,10 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                     if table_text.strip():
                         tables.append({"text": table_text, "page": pg.page_number})
 
-            # ── Step 3b: Vision pipeline — describe PDF images (Session 7) ──
+            # ── Step 3b: Vision pipeline — describe images ────────────────
             image_captions = []
+
+            # PDF embedded images (Session 7)
             if ext == ".pdf":
                 all_page_images = [
                     (pg.page_number, img_bytes)
@@ -235,6 +286,49 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                                 f"Vision error — {filename} image {img_idx + 1} page {page_num}: {exc}"
                             )
 
+            # PPTX slide vision pipeline (Session 13)
+            # Each slide is rendered as PNG and described by the vision model.
+            # Descriptions supplement (or replace) text for image-only slides.
+            if ext == ".pptx":
+                _set_job(
+                    job_id,
+                    progress=pct(0.35),
+                    message=f"[pptx-vision] Rendering slides for {filename}...",
+                )
+                try:
+                    slide_images = ppt_parser._render_slides_to_images(upload_path)
+                    if slide_images:
+                        _set_job(
+                            job_id,
+                            message=f"[pptx-vision] Describing {len(slide_images)} slide(s)...",
+                        )
+                        for slide_idx, png_bytes in enumerate(slide_images):
+                            slide_num = slide_idx + 1
+                            try:
+                                _set_job(
+                                    job_id,
+                                    message=f"[pptx-vision] slide {slide_num}/{len(slide_images)}...",
+                                )
+                                caption = await asyncio.wait_for(
+                                    vision_service.describe_image_bytes(png_bytes),
+                                    timeout=60.0,
+                                )
+                                if caption.strip():
+                                    image_captions.append({"caption": caption, "page": slide_num})
+                                    logging.info(
+                                        f"[pptx-vision] slide {slide_num} described ({len(caption)} chars)"
+                                    )
+                            except asyncio.TimeoutError:
+                                logging.warning(
+                                    f"[pptx-vision] timeout slide {slide_num} of {filename}"
+                                )
+                            except Exception as exc:
+                                logging.warning(
+                                    f"[pptx-vision] error slide {slide_num}: {exc}"
+                                )
+                except Exception as exc:
+                    logging.warning(f"[pptx-vision] slide rendering failed for {filename}: {exc}")
+
             if not text_blocks and not tables and not image_captions:
                 _set_job(job_id, progress=pct(1.0), message=f"No content found in {filename} — skipped")
                 activity_log.append(
@@ -250,7 +344,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                 "filename": filename,
                 "text_blocks": text_blocks,
                 "tables": tables,
-                "images": image_captions,  # vision captions from Session 7
+                "images": image_captions,  # vision captions from Session 7 / Session 13
             }
 
             # ── Step 4: Chunk ─────────────────────────────────────────────
