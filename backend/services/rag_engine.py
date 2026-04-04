@@ -2,21 +2,39 @@
 LAKO — RAG Engine Service
 Retrieval-Augmented Generation pipeline.
 Query → hybrid search (vector + BM25 + RRF) → MMR diversification → inject chunks → LLM → answer + citations.
-Session 8: Core pipeline.
+Session 8:  Core pipeline.
 Session 8 (post): Hybrid search, query expansion, RRF fusion.
 Session 12: Query caching (TTLCache, 1h, 50 entries) + MMR chunk diversification.
 Session 14: Query decomposition pipeline for cross-document comparison queries.
-           Stage 1: Intent classifier (rule-based)
-           Stage 2: LLM query decomposer
-           Stage 3: Per-sub-query retrieval
-           Stage 4: Context assembly with source-diversity guarantee
-           Stage 5: Intent-aware synthesis prompt
+            Stage 1: Intent classifier (rule-based)
+            Stage 2: LLM query decomposer
+            Stage 3: Per-sub-query retrieval
+            Stage 4: Context assembly with source-diversity guarantee
+            Stage 5: Intent-aware synthesis prompt
+Session 18: Deep retrieval for collapsed single-doc queries — _SINGLE_DOC_COLLAPSED_RETRIEVE
+            casts a wider net (20 candidates) so deep table rows in dense statistical
+            reports are not cut off at top_k=5.
+Session 20: Multi-source conflict handling — industry standard three-layer approach:
+Session 22: Multi-topic intent class — detects queries with multiple independent questions
+            (multiple "?" or explicit "also/additionally" connectors). Routes through the
+            existing multi-doc decompose→retrieve→assemble pipeline with a dedicated
+            MULTI_TOPIC_SYSTEM_PROMPT that answers each sub-question separately.
+            (1) Conflict-detection instruction in all system prompts — LLM presents
+            conflicting claims from different sources separately instead of blending.
+            (2) Recency bias in RRF — small additive bonus (max 0.01) for recently
+            ingested chunks acts as a tiebreaker when topic overlap exists.
+            (3) Ingestion date injected into prompt context and source citations so
+            the LLM and user can both reason about document recency.
 """
 
 import asyncio
 import json
 import logging
+import math
+import re
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncGenerator, List, Optional
 
 from cachetools import TTLCache
@@ -27,19 +45,40 @@ from services.ollama_client import ollama_client
 from services.bm25_index import bm25_index
 from config import get_config
 
+# When the comparison guard collapses sub-queries to one document, cast a wider
+# retrieval net so deep table rows in dense statistical reports are not cut off
+# at the global top_k (typically 5). MMR then trims to _SINGLE_DOC_COLLAPSED_FINAL.
+_SINGLE_DOC_COLLAPSED_RETRIEVE = 20
+_SINGLE_DOC_COLLAPSED_FINAL    = 10
+
+
+_SIGNIFICANCE_REASONING = """
+When the context contains numerical values, rates, or year-over-year changes:
+- If a significance marker (*, †, ‡, or similar symbol) appears next to a value in the source, explicitly note that the source marks this as statistically significant.
+- If no significance marker is present, do not assert the change is statistically significant — describe it as a reported value or observed change only.
+- Never infer statistical significance from the magnitude of a change alone."""
+
+_CONFLICT_DETECTION = """
+Source conflict handling:
+- Before answering, scan all context sections for the same topic covered by multiple sources.
+- If two or more sources state different values, dates, thresholds, or policy rules for the same item, do NOT blend or average them. Present each source's claim separately with its full citation.
+- Explicitly flag conflicts: write "Note: Sources differ on this point." followed by each source's position.
+- When sources differ, indicate which is more recently ingested (shown in the Ingested date in the citation header) as a guide to recency, but do not discard the older source — surface both.
+- If sources agree, synthesise normally without listing each one separately."""
 
 SYSTEM_PROMPT = """You are LAKO, an AI knowledge assistant for bank staff at Rabobank.
 You are given relevant excerpts from internal documents. Use them to compose a clear, complete, and helpful answer in your own words.
-Write in flowing prose — synthesise the information naturally. Do NOT list source references inline; citations are shown separately by the system.
+Write in flowing prose — synthesise the information naturally.
+When referencing information from the context, always cite the source inline as [filename, Page X]. Never write 'Excerpt' or 'Source 1'.
 If the provided context does not contain enough information to answer the question, say exactly: 'This information was not found in the knowledge base.'
-Always respond in the same language as the question (EN or NL)."""
+Always respond in the same language as the question (EN or NL).""" + _SIGNIFICANCE_REASONING + _CONFLICT_DETECTION
 
 COMPARISON_SYSTEM_PROMPT = """You are LAKO, an AI knowledge assistant for bank staff at Rabobank.
 You are answering a question that requires comparing information from multiple documents in the knowledge base.
 
 INSTRUCTIONS:
 - Carefully read ALL context sections provided below
-- Every factual claim must be attributed to its source document
+- When referencing information from the context, always cite the source inline as [filename, Page X]. Never write 'Excerpt' or 'Source 1'.
 - Structure your answer using this format:
 
   ## [First Document / Topic]
@@ -54,14 +93,26 @@ INSTRUCTIONS:
 - If a document does not address a specific point, state that explicitly
 - Do not invent or infer information not present in the provided context
 - Be precise and professional — this is for a bank compliance team
-- Always respond in the same language as the question (EN or NL)."""
+- Always respond in the same language as the question (EN or NL).""" + _SIGNIFICANCE_REASONING + _CONFLICT_DETECTION
 
 AGGREGATION_SYSTEM_PROMPT = """You are LAKO, an AI knowledge assistant for bank staff at Rabobank.
 You are synthesizing information across multiple documents in the knowledge base.
 Combine key points from all sources.
 Note where documents agree, complement, or contradict each other.
+When referencing information from the context, always cite the source inline as [filename, Page X]. Never write 'Excerpt' or 'Source 1'.
 Always attribute claims to their source document by name.
-Always respond in the same language as the question (EN or NL)."""
+Always respond in the same language as the question (EN or NL).""" + _SIGNIFICANCE_REASONING + _CONFLICT_DETECTION
+
+MULTI_TOPIC_SYSTEM_PROMPT = """You are LAKO, an AI knowledge assistant for bank staff at Rabobank.
+The user has asked multiple independent questions in a single query. Answer each question separately and clearly.
+
+INSTRUCTIONS:
+- Identify each distinct question in the user's query
+- Answer each question in its own numbered section, drawing only from the relevant source document(s)
+- When referencing information from the context, always cite the source inline as [filename, Page X]. Never write 'Excerpt' or 'Source 1'.
+- If the context does not contain enough information to answer a specific sub-question, say so explicitly for that question only — do not say the entire query was unanswered
+- Do not blend answers across questions
+- Always respond in the same language as the question (EN or NL).""" + _SIGNIFICANCE_REASONING + _CONFLICT_DETECTION
 
 # ── Query cache ────────────────────────────────────────────────────────────────
 # Key: normalised query string. Value: {"answer": str, "sources": list}.
@@ -83,8 +134,29 @@ AGGREGATION_SIGNALS = [
     "combine", "overall", "in general",
 ]
 
+# Multi-topic signals: query contains multiple independent questions
+MULTI_TOPIC_SIGNALS = [
+    "also, does", "also, is", "also, what", "also, how", "also, can",
+    "also, are", "also, do", "also, will", "also, would",
+    "additionally,", "furthermore,", "second question", "another question",
+]
+
 # Conjunction keywords used for fallback query splitting
 _SPLIT_CONJUNCTIONS = ["and", "with", "versus", "vs", "compared to", "while", "whereas"]
+
+# Fix 3: comparison signals used for table chunk boosting
+_TABLE_BOOST_SIGNALS = frozenset([
+    "compare", "vs", "versus", "difference", "higher than", "lower than",
+])
+
+# Fix 4: stopwords excluded from filename alias matching
+_ALIAS_STOPWORDS = frozenset([
+    "the", "and", "for", "with", "from", "that", "this", "which", "have",
+    "been", "were", "they", "their", "than", "also", "more", "some", "such",
+    "will", "would", "could", "should", "these", "those", "into", "over",
+    "about", "between", "through", "page", "table", "figure", "section",
+    "chapter", "document", "report", "data", "note", "notes", "source",
+])
 
 
 def invalidate_query_cache() -> None:
@@ -102,6 +174,10 @@ def _cache_key(query: str) -> str:
 class RAGEngine:
     """Orchestrates the full RAG pipeline for LAKO."""
 
+    def __init__(self):
+        # Fix 4: filename → set(distinctive words) built from first chunk per doc
+        self._filename_word_sets: dict = {}
+
     # ══════════════════════════════════════════════════════════════════════════
     # Stage 1 — Intent Classifier
     # ══════════════════════════════════════════════════════════════════════════
@@ -111,12 +187,20 @@ class RAGEngine:
         Rule-based intent classifier — no LLM, instant.
 
         Returns:
-          {"intent": "single"|"comparison"|"aggregation", "signals_found": [...]}
+          {"intent": "single"|"comparison"|"aggregation"|"multi-topic", "signals_found": [...]}
+
+        Multi-topic: query contains multiple independent questions (multiple "?"
+        or explicit "also/additionally" connectors before a new question).
+        Checked last so comparison/aggregation take priority when overlap exists.
         """
         q = query.lower()
 
         comparison_found = [s for s in COMPARISON_SIGNALS if s in q]
         aggregation_found = [s for s in AGGREGATION_SIGNALS if s in q]
+        multi_topic_found = [s for s in MULTI_TOPIC_SIGNALS if s in q]
+
+        # Multiple question marks are the strongest signal for independent questions
+        question_mark_count = query.count("?")
 
         if comparison_found:
             intent = "comparison"
@@ -124,6 +208,9 @@ class RAGEngine:
         elif aggregation_found:
             intent = "aggregation"
             signals = aggregation_found
+        elif multi_topic_found or question_mark_count > 1:
+            intent = "multi-topic"
+            signals = multi_topic_found + (["multiple-questions"] if question_mark_count > 1 else [])
         else:
             intent = "single"
             signals = []
@@ -341,7 +428,7 @@ class RAGEngine:
         intent_result = self.classify_query_intent(question)
         intent = intent_result["intent"]
 
-        if intent in ("comparison", "aggregation"):
+        if intent in ("comparison", "aggregation", "multi-topic"):
             return await self._multi_doc_query(question, effective_model, intent)
 
         # ── Standard single-doc pipeline (unchanged) ─────────────────────────
@@ -404,14 +491,52 @@ class RAGEngine:
     ) -> dict:
         """Stages 2–5 for comparison/aggregation queries."""
         logger.info(f"[multi-doc] Starting multi-doc pipeline (intent={intent})")
+        config = get_config()
 
         # Stage 2 — Decompose
         sub_queries = await self.decompose_query(question)
 
-        # Stage 3 — Per-sub-query retrieval
-        all_chunks = await self.retrieve_for_subqueries(sub_queries, top_k_per=3)
+        # Fix 3 — Within-document comparison guard
+        # Ensure BM25 is ready before the prescan
+        if bm25_index.is_dirty or bm25_index.size == 0:
+            docs = chroma_client.get_all_documents()
+            bm25_index.build(docs)
+            self._build_filename_aliases(docs)
 
-        if not all_chunks:
+        sub_queries, collapsed = self._check_same_document_guard(sub_queries)
+
+        if collapsed:
+            # All sub-queries point to the same document — run as unified retrieval.
+            # Use a deeper top_k to surface deep table rows in dense statistical docs.
+            raw_chunks = await self._hybrid_search(
+                query=self._expand_query(question),
+                top_k=_SINGLE_DOC_COLLAPSED_RETRIEVE,
+                threshold=config["similarity_threshold"],
+            )
+            raw_chunks = self._boost_table_chunks(raw_chunks, question)
+            final_chunks = self._mmr_select(raw_chunks, top_k=_SINGLE_DOC_COLLAPSED_FINAL)
+            retrieval_mode = "unified"
+        else:
+            # Stage 3 — Per-sub-query retrieval
+            all_chunks = await self.retrieve_for_subqueries(sub_queries, top_k_per=3)
+
+            if not all_chunks:
+                return {
+                    "answer": "This information was not found in the knowledge base.",
+                    "sources": [],
+                    "model": model,
+                    "rag_used": True,
+                    "cache_hit": False,
+                    "intent": intent,
+                    "sub_queries": sub_queries,
+                    "retrieval_mode": "multi-doc",
+                }
+
+            # Stage 4 — Assemble context
+            final_chunks = self.assemble_context(all_chunks, question)
+            retrieval_mode = "multi-doc"
+
+        if not final_chunks:
             return {
                 "answer": "This information was not found in the knowledge base.",
                 "sources": [],
@@ -420,19 +545,24 @@ class RAGEngine:
                 "cache_hit": False,
                 "intent": intent,
                 "sub_queries": sub_queries,
-                "retrieval_mode": "multi-doc",
+                "retrieval_mode": retrieval_mode,
             }
 
-        # Stage 4 — Assemble context
-        final_chunks = self.assemble_context(all_chunks, question)
-
         # Stage 5 — Intent-aware prompt + LLM
-        system = COMPARISON_SYSTEM_PROMPT if intent == "comparison" else AGGREGATION_SYSTEM_PROMPT
+        if intent == "comparison":
+            system = COMPARISON_SYSTEM_PROMPT
+        elif intent == "multi-topic":
+            system = MULTI_TOPIC_SYSTEM_PROMPT
+        else:
+            system = AGGREGATION_SYSTEM_PROMPT
         prompt = self._build_prompt(question, final_chunks)
         answer = await ollama_client.chat(prompt, model=model, system=system)
 
         sources = self._format_sources(final_chunks)
-        logger.info(f"[multi-doc] Pipeline complete — {len(final_chunks)} chunks, {len(sources)} sources")
+        logger.info(
+            f"[multi-doc] Pipeline complete — {len(final_chunks)} chunks, "
+            f"{len(sources)} sources, mode={retrieval_mode}"
+        )
 
         return {
             "answer":    answer,
@@ -442,7 +572,7 @@ class RAGEngine:
             "cache_hit": False,
             "intent":    intent,
             "sub_queries": sub_queries,
-            "retrieval_mode": "multi-doc",
+            "retrieval_mode": retrieval_mode,
         }
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -475,7 +605,7 @@ class RAGEngine:
             intent_result = self.classify_query_intent(question)
             intent = intent_result["intent"]
 
-            if intent in ("comparison", "aggregation"):
+            if intent in ("comparison", "aggregation", "multi-topic"):
                 async for line in self._stream_multi_doc(question, effective_model, intent):
                     yield line
                 return
@@ -537,28 +667,58 @@ class RAGEngine:
         """Streaming multi-doc pipeline for comparison/aggregation queries."""
         try:
             yield json.dumps({"t": "cache_hit", "v": False}) + "\n"
+            config = get_config()
 
             # Stage 2 — Decompose
             sub_queries = await self.decompose_query(question)
+
+            # Fix 3 — Within-document comparison guard
+            if bm25_index.is_dirty or bm25_index.size == 0:
+                docs = chroma_client.get_all_documents()
+                bm25_index.build(docs)
+                self._build_filename_aliases(docs)
+
+            sub_queries, collapsed = self._check_same_document_guard(sub_queries)
+            retrieval_mode = "unified" if collapsed else "multi-doc"
+
             yield json.dumps({"t": "meta", "v": {
                 "intent": intent,
-                "retrieval_mode": "multi-doc",
+                "retrieval_mode": retrieval_mode,
                 "sub_queries": sub_queries,
             }}) + "\n"
 
-            # Stage 3 — Retrieve
-            all_chunks = await self.retrieve_for_subqueries(sub_queries, top_k_per=3)
+            if collapsed:
+                raw_chunks = await self._hybrid_search(
+                    query=self._expand_query(question),
+                    top_k=_SINGLE_DOC_COLLAPSED_RETRIEVE,
+                    threshold=config["similarity_threshold"],
+                )
+                raw_chunks = self._boost_table_chunks(raw_chunks, question)
+                final_chunks = self._mmr_select(raw_chunks, top_k=_SINGLE_DOC_COLLAPSED_FINAL)
+            else:
+                # Stage 3 — Retrieve
+                all_chunks = await self.retrieve_for_subqueries(sub_queries, top_k_per=3)
 
-            if not all_chunks:
+                if not all_chunks:
+                    yield json.dumps({"t": "token", "v": "This information was not found in the knowledge base."}) + "\n"
+                    yield json.dumps({"t": "sources", "v": []}) + "\n"
+                    return
+
+                # Stage 4 — Assemble
+                final_chunks = self.assemble_context(all_chunks, question)
+
+            if not final_chunks:
                 yield json.dumps({"t": "token", "v": "This information was not found in the knowledge base."}) + "\n"
                 yield json.dumps({"t": "sources", "v": []}) + "\n"
                 return
 
-            # Stage 4 — Assemble
-            final_chunks = self.assemble_context(all_chunks, question)
-
             # Stage 5 — Stream LLM response
-            system = COMPARISON_SYSTEM_PROMPT if intent == "comparison" else AGGREGATION_SYSTEM_PROMPT
+            if intent == "comparison":
+                system = COMPARISON_SYSTEM_PROMPT
+            elif intent == "multi-topic":
+                system = MULTI_TOPIC_SYSTEM_PROMPT
+            else:
+                system = AGGREGATION_SYSTEM_PROMPT
             prompt = self._build_prompt(question, final_chunks)
 
             async for token in ollama_client.stream_chat(prompt, model=model, system=system):
@@ -566,7 +726,7 @@ class RAGEngine:
 
             sources = self._format_sources(final_chunks)
             yield json.dumps({"t": "sources", "v": sources}) + "\n"
-            logger.info(f"[multi-doc] Stream complete — {len(sources)} sources")
+            logger.info(f"[multi-doc] Stream complete — {len(sources)} sources, mode={retrieval_mode}")
 
         except Exception as exc:
             logging.exception("RAG _stream_multi_doc failed")
@@ -577,31 +737,51 @@ class RAGEngine:
     # ══════════════════════════════════════════════════════════════════════════
 
     async def _hybrid_search(
-        self, query: str, top_k: int, threshold: float
+        self, query: str, top_k: int, threshold: float,
+        where: Optional[dict] = None,
     ) -> List[dict]:
         """
         Combines vector similarity search and BM25 keyword search via
         Reciprocal Rank Fusion (RRF). Retrieves 3× top_k candidates from
         each method, fuses, then returns top 3×top_k results for MMR to
         select from.
+
+        Fix 4: If query names a known document, scopes ChromaDB and BM25
+        retrieval to that file only (filename metadata routing).
         """
         candidates = top_k * 3
 
+        # Rebuild BM25 + alias lookup before any prescan or search
+        if bm25_index.is_dirty or bm25_index.size == 0:
+            docs = chroma_client.get_all_documents()
+            bm25_index.build(docs)
+            self._build_filename_aliases(docs)
+            logging.info(f"BM25 index rebuilt — {bm25_index.size} documents")
+
         query_embedding = await embedder.embed_query(query)
+
+        # Fix 4: auto-detect source file from query tokens
+        if where is None:
+            detected = self._detect_source_file(query)
+            if detected:
+                where = {"filename": detected}
+
         vector_hits = chroma_client.similarity_search(
             query_embedding,
             top_k=candidates,
             threshold=threshold,
+            where=where,
         )
-
-        if bm25_index.is_dirty or bm25_index.size == 0:
-            docs = chroma_client.get_all_documents()
-            bm25_index.build(docs)
-            logging.info(f"BM25 index rebuilt — {bm25_index.size} documents")
 
         bm25_hits = bm25_index.search(query, top_k=candidates)
 
+        # Filter BM25 hits to same file when scoped
+        if where and "filename" in where:
+            target = where["filename"]
+            bm25_hits = [h for h in bm25_hits if h["metadata"].get("filename") == target]
+
         fused = self._rrf_combine(vector_hits, bm25_hits)
+        fused = self._apply_recency_bias(fused)
         return fused[:candidates]
 
     def _rrf_combine(
@@ -639,6 +819,119 @@ class RAGEngine:
             results.append(item)
 
         return results
+
+    # ── Fix 3: Within-document comparison guard ─────────────────────────────
+
+    def _check_same_document_guard(self, sub_queries: List[str]) -> tuple:
+        """
+        BM25 pre-scan: if every sub-query's top-1 BM25 hit is the same file,
+        collapse to unified retrieval. Returns (sub_queries, collapsed: bool).
+        Skips guard if BM25 is not yet built (first query after startup).
+        """
+        if len(sub_queries) <= 1 or bm25_index.size == 0:
+            return sub_queries, False
+
+        filenames = []
+        for sq in sub_queries:
+            hits = bm25_index.search(sq, top_k=1)
+            filenames.append(hits[0]["metadata"].get("filename", "") if hits else "")
+
+        unique = {f for f in filenames if f}
+        if len(unique) == 1:
+            fname = next(iter(unique))
+            logger.info(
+                f"[guard] All sub-queries resolve to '{fname}' — collapsing to unified retrieval"
+            )
+            return sub_queries, True
+
+        return sub_queries, False
+
+    def _boost_table_chunks(
+        self, chunks: List[dict], query: str, bonus: float = 0.02
+    ) -> List[dict]:
+        """
+        Add a flat RRF bonus to has_table chunks when the query carries
+        comparison signals or year-pair patterns (e.g. 2023/2024).
+        Re-sorts the list after boosting.
+        """
+        q_lower = query.lower()
+        has_signal = any(s in q_lower for s in _TABLE_BOOST_SIGNALS)
+        if not has_signal:
+            has_signal = bool(re.search(r'\b(19|20)\d{2}\b.*\b(19|20)\d{2}\b', q_lower))
+        if not has_signal:
+            return chunks
+
+        boosted = []
+        for chunk in chunks:
+            c = dict(chunk)
+            if c["metadata"].get("has_table"):
+                c["score"] = round(c["score"] + bonus, 6)
+            boosted.append(c)
+        return sorted(boosted, key=lambda x: x["score"], reverse=True)
+
+    # ── Fix 4: Filename alias lookup ────────────────────────────────────────
+
+    def _build_filename_aliases(self, docs: List[dict]) -> None:
+        """
+        For each unique filename, build a set of distinctive words from its
+        first indexed chunk. Used at query time to detect source-scoped queries.
+        Includes: acronyms (2+ uppercase letters), filename stem words, and
+        meaningful body words (≥5 chars, not stopwords).
+        """
+        file_words: dict = {}
+        seen: set = set()
+
+        for doc in docs:
+            fname = doc["metadata"].get("filename", "")
+            if not fname or fname in seen:
+                continue
+            seen.add(fname)
+
+            text = doc["document"]
+            acronyms = {w.lower() for w in re.findall(r'\b[A-Z]{2,}\b', text)}
+            stem_words = {
+                w for w in re.findall(r'[a-z]{4,}', Path(fname).stem.lower())
+                if w not in _ALIAS_STOPWORDS
+            }
+            body_words = {
+                w for w in re.findall(r'\b[a-z]{5,}\b', text.lower())
+                if w not in _ALIAS_STOPWORDS
+            }
+            file_words[fname] = acronyms | stem_words | body_words
+
+        self._filename_word_sets = file_words
+        logger.info(f"[routing] Alias lookup built — {len(file_words)} file(s)")
+
+    def _detect_source_file(self, query: str) -> Optional[str]:
+        """
+        Check if a query explicitly references a known document.
+        Extracts acronyms and meaningful words from the query, then scores
+        each filename by overlap with its word set.
+        Returns filename if ≥2 tokens match, else None.
+        """
+        if not self._filename_word_sets:
+            return None
+
+        q_acronyms = {w.lower() for w in re.findall(r'\b[A-Z]{2,}\b', query)}
+        q_words = {
+            w for w in re.findall(r'\b[a-z]{4,}\b', query.lower())
+            if w not in _ALIAS_STOPWORDS
+        }
+        q_all = q_acronyms | q_words
+        if not q_all:
+            return None
+
+        best_fname, best_score = None, 0
+        for fname, fwords in self._filename_word_sets.items():
+            score = len(q_all & fwords)
+            if score > best_score:
+                best_score = score
+                best_fname = fname
+
+        if best_score >= 2:
+            logger.info(f"[routing] Scoped to '{best_fname}' ({best_score} keyword hits)")
+            return best_fname
+        return None
 
     # ── MMR diversification ─────────────────────────────────────────────────
 
@@ -713,15 +1006,59 @@ class RAGEngine:
             )
         return question
 
+    # ── Recency bias ─────────────────────────────────────────────────────────
+
+    def _apply_recency_bias(self, chunks: List[dict], max_bonus: float = 0.01) -> List[dict]:
+        """
+        Add a small recency bonus to each chunk based on ingestion timestamp.
+        Acts as a tiebreaker when multiple sources cover the same topic.
+
+        Formula: bonus = max_bonus * exp(-days_since_ingest / 365)
+          - Ingested today    → +0.010 (full bonus)
+          - Ingested 6 months → +0.006
+          - Ingested 1 year   → +0.004
+          - Ingested 3 years  → +0.001
+
+        This never overrides a clearly better relevance score — it only
+        differentiates near-equal chunks from different ingestion dates.
+        """
+        now = datetime.now(timezone.utc)
+        result = []
+        for chunk in chunks:
+            c = dict(chunk)
+            ts_str = c["metadata"].get("timestamp", "")
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                days = max(0.0, (now - ts).total_seconds() / 86400)
+                bonus = max_bonus * math.exp(-days / 365)
+                c["score"] = round(c["score"] + bonus, 6)
+            except Exception:
+                pass  # unparseable timestamp — no bonus
+            result.append(c)
+        return sorted(result, key=lambda x: x["score"], reverse=True)
+
     # ── Prompt assembly ─────────────────────────────────────────────────────
 
     def _build_prompt(self, question: str, chunks: List[dict]) -> str:
-        """Assemble the augmented prompt with source context."""
+        """
+        Assemble the augmented prompt with citation-anchored source context.
+        Includes ingestion date in each citation header so the LLM can reason
+        about document recency when sources conflict.
+        """
         context_parts = []
-        for i, chunk in enumerate(chunks, 1):
+        for chunk in chunks:
             meta = chunk["metadata"]
+            # Format ingestion date as YYYY-MM-DD for readability
+            ts_str = meta.get("timestamp", "")
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                ingested = ts.strftime("%Y-%m-%d")
+            except Exception:
+                ingested = "unknown"
             context_parts.append(
-                f"--- Excerpt {i} (from {meta['filename']}, page {meta['page']}) ---\n"
+                f"[{meta['filename']}, Page {meta['page']}, Ingested: {ingested}]\n"
                 f"{chunk['document']}"
             )
         context = "\n\n".join(context_parts)
@@ -732,19 +1069,27 @@ class RAGEngine:
         )
 
     def _format_sources(self, chunks: List[dict]) -> List[dict]:
-        """Format chunk metadata into source citation dicts."""
-        return [
-            {
-                "filename":   c["metadata"]["filename"],
-                "page":       c["metadata"]["page"],
-                "chunk_type": c["metadata"]["chunk_type"],
-                "score":      c["score"],
-                "content":    c["document"],
-                "source":     c["metadata"].get("source", "document"),
-                "url":        c["metadata"].get("url", ""),
-            }
-            for c in chunks
-        ]
+        """Format chunk metadata into source citation dicts, including ingestion date."""
+        sources = []
+        for c in chunks:
+            meta = c["metadata"]
+            ts_str = meta.get("timestamp", "")
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                ingested_date = ts.strftime("%Y-%m-%d")
+            except Exception:
+                ingested_date = ""
+            sources.append({
+                "filename":     meta["filename"],
+                "page":         meta["page"],
+                "chunk_type":   meta["chunk_type"],
+                "score":        c["score"],
+                "content":      c["document"],
+                "source":       meta.get("source", "document"),
+                "url":          meta.get("url", ""),
+                "ingested_date": ingested_date,
+            })
+        return sources
 
 
 # Singleton instance

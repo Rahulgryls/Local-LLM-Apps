@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Any
 
-from services.rag_engine import rag_engine
+from services.rag_engine import rag_engine, _query_cache, invalidate_query_cache
 
 router = APIRouter()
 
@@ -39,6 +39,21 @@ class RAGResponse(BaseModel):
     intent: Optional[str] = None            # "single" | "comparison" | "aggregation"
     sub_queries: Optional[List[str]] = None # populated for multi-doc only
     retrieval_mode: Optional[str] = None    # "standard" | "multi-doc"
+
+
+@router.get("/cache/stats")
+async def cache_stats():
+    """Return current query-cache occupancy."""
+    return {"cached_queries": len(_query_cache), "max_size": 50, "ttl_seconds": 3600}
+
+
+@router.delete("/cache")
+async def clear_cache():
+    """Invalidate all cached RAG query results."""
+    before = len(_query_cache)
+    invalidate_query_cache()
+    logging.info(f"[cache] Manually cleared {before} cached entr{'y' if before == 1 else 'ies'} via API")
+    return {"cleared": before, "cached_queries": 0}
 
 
 @router.post("/rag/query")

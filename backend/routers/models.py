@@ -37,6 +37,7 @@ class ConfigUpdateRequest(BaseModel):
     primary_model:        Optional[str]   = None
     vision_model:         Optional[str]   = None
     embedding_model:      Optional[str]   = None
+    summarization_model:  Optional[str]   = None
     ollama_url:           Optional[str]   = None
     chromadb_path:        Optional[str]   = None
     confluence_url:       Optional[str]   = None
@@ -62,37 +63,45 @@ def _model_installed(config_name: str, installed_names: List[str]) -> bool:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-# Models excluded from the chat selector (embedding-only, deprecated, or specialist-only)
-_CHAT_BLOCKLIST = {"qwen2.5:3b", "qwen3.5:9b", "llava:13b", "nomic-embed-text"}
-
-
 @router.get("/models/chat")
 async def list_chat_models():
     """
-    Returns only models appropriate for chat/query use.
-    Filters out embedding, deprecated, and specialist-only models.
+    Returns all Ollama models appropriate for chat/query use.
+    Only excludes the configured embedding model (not suitable for chat).
     Used by the Chat page model selector.
     """
     config = get_config()
     default_model = config["primary_model"]
+    embedding_model = config["embedding_model"]
 
     reachable = await ollama_client.health_check()
     if not reachable:
         return {"models": [default_model], "default": default_model}
 
     raw_models = await ollama_client.list_models()
+
+    # Only exclude the embedding model — all other downloaded models are chat-capable
     chat_models = [
-        m["name"]
+        m
         for m in raw_models
-        if m["name"] not in _CHAT_BLOCKLIST
-        and not any(m["name"].startswith(b + ":") for b in _CHAT_BLOCKLIST)
+        if m["name"] != embedding_model
+        and not m["name"].startswith(embedding_model + ":")
     ]
 
-    # Primary model always present even if Ollama hasn't indexed it yet
-    if default_model not in chat_models:
-        chat_models.insert(0, default_model)
+    # Sort: default model first, rest alphabetically
+    non_default = sorted(
+        [m for m in chat_models if m["name"] != default_model],
+        key=lambda m: m["name"],
+    )
+    default_entry = next((m for m in chat_models if m["name"] == default_model), None)
 
-    return {"models": chat_models, "default": default_model}
+    if default_entry:
+        ordered = [default_entry] + non_default
+    else:
+        # Primary model not yet pulled — inject a placeholder entry
+        ordered = [{"name": default_model, "size": "not pulled"}] + non_default
+
+    return {"models": ordered, "default": default_model}
 
 
 @router.get("/models", response_model=ModelsResponse)

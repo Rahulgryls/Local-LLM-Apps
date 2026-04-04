@@ -274,6 +274,7 @@ const EMPTY_SETTINGS = {
   primary_model:        '',
   vision_model:         '',
   embedding_model:      '',
+  summarization_model:  '',
   ollama_url:           'http://localhost:11434',
   chromadb_path:        '',
   confluence_url:       '',
@@ -396,6 +397,12 @@ export default function Settings() {
           <ModelSelect label={t('settings.primaryLlm')}     name="primary_model"   value={settings.primary_model}   onChange={handleChange} models={models} notInstalledText={notInstalledText} />
           <ModelSelect label={t('settings.visionModel')}    name="vision_model"    value={settings.vision_model}    onChange={handleChange} models={models} notInstalledText={notInstalledText} />
           <ModelSelect label={t('settings.embeddingModel')} name="embedding_model" value={settings.embedding_model} onChange={handleChange} models={models} notInstalledText={notInstalledText} />
+          <div>
+            <ModelSelect label="Summarization Model (table summaries at ingest)" name="summarization_model" value={settings.summarization_model || ''} onChange={handleChange} models={models} notInstalledText={notInstalledText} />
+            <p className="text-xs text-gray-600 mt-1">
+              Used only for generating table summaries during ingestion. A small fast model (e.g. qwen2.5:7b) is recommended. Falls back to Primary LLM if not set.
+            </p>
+          </div>
           <Field       label={t('settings.ollamaUrl')}      name="ollama_url"      value={settings.ollama_url}      onChange={handleChange} />
         </div>
       </section>

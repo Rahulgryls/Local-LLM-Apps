@@ -1,10 +1,12 @@
 /**
  * LAKO — Source Citations Component
  * Displays source chunks returned with each RAG answer.
- * Shows: filename, page number, chunk type, relevance score.
- * Session 1: Shell — wired in Session 8.
+ * Shows: filename, page number, chunk type, relevance score, ingestion date.
+ * Session 1:  Shell — wired in Session 8.
  * Session 12: Full i18n (EN + NL).
  * Session 14: Grouped multi-doc display when retrieval_mode = "multi-doc".
+ * Session 20: ingested_date shown in citation cards — helps users identify
+ *             which source is more recent when conflict is flagged in answer.
  */
 
 import React, { useState } from 'react'
@@ -74,6 +76,7 @@ export default function SourceCitations({ sources = [], retrieval_mode }) {
                       </span>
                       <span className="text-gray-600">
                         {src.chunk_type}
+                        {src.ingested_date && <span className="ml-2 text-gray-700">· {src.ingested_date}</span>}
                       </span>
                     </div>
                     <p className="text-gray-500 line-clamp-2">{src.content}</p>
@@ -107,6 +110,7 @@ export default function SourceCitations({ sources = [], retrieval_mode }) {
                       ? 'Confluence'
                       : t('sources.page', { page: src.page })
                     } · {src.chunk_type}
+                    {src.ingested_date && <span className="ml-2 text-gray-600">· {src.ingested_date}</span>}
                   </span>
                 </div>
                 <p className="text-gray-500 line-clamp-2">{src.content}</p>

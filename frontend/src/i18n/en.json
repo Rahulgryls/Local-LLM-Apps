@@ -46,10 +46,13 @@
     "noActivity":             "No ingestion activity yet",
     "colType":                "Type",
     "colTitle":               "Title",
-    "colChunks":              "Chunks",
+    "colChunks":              "Chunks / Pages",
     "colStatus":              "Status",
+    "colDuration":            "Time Consumed",
     "colTime":                "Time",
     "success":                "Success",
+    "skipped":                "Skipped",
+    "skippedCount":           "{{count}} skipped",
     "failed":                 "Failed"
   },
   "chat": {
@@ -152,6 +155,40 @@
     "usedPlural": "{{count}} sources used",
     "page":    "p.{{page}}",
     "score":   "score"
+  },
+  "v2": {
+    "chat": {
+      "ragMode":       "Search documents",
+      "webMode":       "Search web",
+      "allDocs":       "All documents",
+      "debugPanel":    "Debug",
+      "cacheHit":      "Cache hit",
+      "noDocsWarning": "No documents in V2 index yet. Upload a PDF or PPTX via the V2 uploader.",
+      "modelsLoading": "Models loading, please wait…"
+    },
+    "ingest": {
+      "title":            "V2 Smart Index",
+      "subtitle":         "Full-page extraction → LLM summarization → Qdrant embedding",
+      "supported":        "Accepted: PDF, PPTX (one file at a time)",
+      "phaseExtracting":  "Extracting pages…",
+      "phaseSummarizing": "Summarizing ({{current}}/{{total}})…",
+      "phaseEmbedding":   "Embedding…",
+      "phaseReady":       "Ready ✓",
+      "phaseFailed":      "Failed",
+      "ingestBtn":        "Upload to V2 Index",
+      "ingesting":        "Processing…",
+      "docsTitle":        "V2 Indexed Documents",
+      "noDocsYet":        "No documents in V2 index yet."
+    },
+    "dashboard": {
+      "title":         "V2 Index",
+      "documents":     "Documents",
+      "qdrantPoints":  "Qdrant vectors",
+      "cacheHitRate":  "Cache hit rate",
+      "llmReady":      "LLM",
+      "embedderReady": "Embedder",
+      "unavailable":   "V2 backend unavailable"
+    }
   },
   "common": {
     "loading":     "Loading...",

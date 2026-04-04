@@ -46,10 +46,13 @@
     "noActivity":             "Nog geen ingestie-activiteit",
     "colType":                "Type",
     "colTitle":               "Titel",
-    "colChunks":              "Fragmenten",
+    "colChunks":              "Fragmenten / Pagina's",
     "colStatus":              "Status",
+    "colDuration":            "Tijd Verbruikt",
     "colTime":                "Tijd",
     "success":                "Geslaagd",
+    "skipped":                "Overgeslagen",
+    "skippedCount":           "{{count}} overgeslagen",
     "failed":                 "Mislukt"
   },
   "chat": {
@@ -152,6 +155,40 @@
     "usedPlural": "{{count}} bronnen gebruikt",
     "page":       "p.{{page}}",
     "score":      "score"
+  },
+  "v2": {
+    "chat": {
+      "ragMode":       "Documenten doorzoeken",
+      "webMode":       "Web doorzoeken",
+      "allDocs":       "Alle documenten",
+      "debugPanel":    "Debug",
+      "cacheHit":      "Cache-treffer",
+      "noDocsWarning": "Nog geen documenten in V2-index. Upload een PDF of PPTX via de V2-uploader.",
+      "modelsLoading": "Modellen worden geladen, even geduld…"
+    },
+    "ingest": {
+      "title":            "V2 Smart Index",
+      "subtitle":         "Pagina-extractie → LLM-samenvatting → Qdrant-inbedding",
+      "supported":        "Geaccepteerd: PDF, PPTX (één bestand tegelijk)",
+      "phaseExtracting":  "Pagina's extraheren…",
+      "phaseSummarizing": "Samenvatten ({{current}}/{{total}})…",
+      "phaseEmbedding":   "Inbedden…",
+      "phaseReady":       "Gereed ✓",
+      "phaseFailed":      "Mislukt",
+      "ingestBtn":        "Uploaden naar V2-index",
+      "ingesting":        "Verwerken…",
+      "docsTitle":        "V2 Geïndexeerde Documenten",
+      "noDocsYet":        "Nog geen documenten in V2-index."
+    },
+    "dashboard": {
+      "title":         "V2-index",
+      "documents":     "Documenten",
+      "qdrantPoints":  "Qdrant-vectoren",
+      "cacheHitRate":  "Cache-trefferpercentage",
+      "llmReady":      "Taalmodel",
+      "embedderReady": "Inbedder",
+      "unavailable":   "V2-backend niet beschikbaar"
+    }
   },
   "common": {
     "loading":      "Laden...",

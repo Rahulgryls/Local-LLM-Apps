@@ -2,9 +2,13 @@
 LAKO — ChromaDB Client Service
 Local vector database — no Docker required.
 Stores and retrieves embedded document chunks with metadata.
-Session 4: Fully implemented.
+Session 4:  Fully implemented.
+Session 19: delete_by_filename() — removes all chunks for a given filename,
+            used by the file deduplication pipeline before re-ingesting a
+            changed document.
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,6 +117,7 @@ class ChromaClient:
         query_embedding: List[float],
         top_k: int = 5,
         threshold: float = 0.7,
+        where: dict = None,
     ) -> List[dict]:
         """
         Find the top_k most similar chunks to query_embedding.
@@ -121,6 +126,9 @@ class ChromaClient:
         ChromaDB returns cosine distance (0 = identical, 2 = opposite).
         We convert: similarity = 1 - distance, then filter by threshold.
 
+        Optional `where` dict scopes retrieval to a specific document
+        (e.g. {"filename": "report.pdf"}) — used for filename-routing (Fix 4).
+
         Returns list of dicts: {document, metadata, score}
         where score is cosine similarity (0–1).
         """
@@ -128,11 +136,21 @@ class ChromaClient:
         if collection.count() == 0:
             return []
 
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(top_k, collection.count()),
-            include=["documents", "metadatas", "distances"],
-        )
+        n = min(top_k, collection.count())
+        try:
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n,
+                include=["documents", "metadatas", "distances"],
+                where=where,
+            )
+        except Exception:
+            # Fallback: query without where filter if it causes an error
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n,
+                include=["documents", "metadatas", "distances"],
+            )
 
         hits = []
         distances  = results["distances"][0]
@@ -190,6 +208,40 @@ class ChromaClient:
                 result["ids"], result["documents"], result["metadatas"]
             )
         ]
+
+    def filename_exists(self, filename: str) -> bool:
+        """
+        Return True if any chunks with metadata.filename == filename exist.
+        Used by the deduplication bootstrap check for files ingested before
+        Session 19 (no hash entry in file_registry yet).
+        """
+        try:
+            collection = self.get_collection()
+            result = collection.get(where={"filename": filename}, include=[], limit=1)
+            return len(result.get("ids", [])) > 0
+        except Exception:
+            return False
+
+    def delete_by_filename(self, filename: str) -> int:
+        """
+        Delete all chunks whose metadata.filename matches the given filename.
+        Returns the number of chunks deleted.
+        Called before re-ingesting a changed document to ensure clean replacement.
+        """
+        try:
+            collection = self.get_collection()
+            # Fetch IDs only — no need to retrieve documents or embeddings
+            result = collection.get(where={"filename": filename}, include=[])
+            ids = result.get("ids", [])
+            if ids:
+                collection.delete(ids=ids)
+                logging.info(
+                    f"[chroma] deleted {len(ids)} chunk(s) for '{filename}'"
+                )
+            return len(ids)
+        except Exception as exc:
+            logging.warning(f"[chroma] delete_by_filename failed for '{filename}': {exc}")
+            return 0
 
     def clear_collection(self) -> int:
         """

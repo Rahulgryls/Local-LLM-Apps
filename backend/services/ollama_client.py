@@ -120,6 +120,8 @@ class OllamaClient:
         Uses embedding_model from config (nomic-embed-text).
         Returns a flat list of floats (768 dims for nomic-embed-text).
         """
+        if not text or not text.strip():
+            raise ValueError("embed() called with empty text — refusing to send to Ollama")
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{self._base_url()}/api/embed",
@@ -135,6 +137,9 @@ class OllamaClient:
         More efficient than calling embed() in a loop.
         Returns list of float vectors, one per input text.
         """
+        texts = [t for t in texts if t and t.strip()]
+        if not texts:
+            return []
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(
                 f"{self._base_url()}/api/embed",

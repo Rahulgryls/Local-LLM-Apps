@@ -3,13 +3,14 @@
  * Real-time system stats: vector DB, models, ingestion activity.
  * Session 11: Full rewrite with live data from /api/dashboard/*.
  * Session 12: Full i18n (EN + NL).
+ * Session 15 (V2 Session 5): Added V2 Index panel (Qdrant + cache + model readiness).
  */
 
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   RefreshCw, Database, FileText, Key, Server,
-  CheckCircle, XCircle, Globe, WifiOff, AlertCircle,
+  CheckCircle, XCircle, Globe, WifiOff, AlertCircle, Zap,
 } from 'lucide-react'
 import StatCard from '../components/StatCard'
 import useDashboard from '../hooks/useDashboard'
@@ -25,9 +26,119 @@ function relativeTime(isoString) {
   return `${Math.floor(diff / 86400)}d`
 }
 
+function formatDuration(seconds) {
+  if (seconds == null) return '—'
+  if (seconds < 60)  return `${seconds.toFixed(1)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  return s > 0 ? `${m}m ${s}s` : `${m}m`
+}
+
 function secondsAgo(date) {
   if (!date) return null
   return Math.floor((Date.now() - date.getTime()) / 1000)
+}
+
+// ── V2 Stats Panel ────────────────────────────────────────────────────────────
+
+function V2StatsPanel({ refreshKey }) {
+  const { t } = useTranslation()
+  const [health,   setHealth]   = useState(null)
+  const [ready,    setReady]    = useState(null)
+  const [docCount, setDocCount] = useState(null)
+  const [error,    setError]    = useState(false)
+
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/v2/health').then(r => r.json()),
+      fetch('/api/v2/ready').then(r => r.json()),
+      fetch('/api/v2/documents').then(r => r.json()),
+    ])
+      .then(([h, r, d]) => {
+        setHealth(h)
+        setReady(r)
+        setDocCount(d.documents?.length ?? 0)
+        setError(false)
+      })
+      .catch(() => setError(true))
+  }, [refreshKey])
+
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-gray-600 bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
+        <AlertCircle size={12} />
+        {t('v2.dashboard.unavailable')}
+      </div>
+    )
+  }
+
+  const hitRate = health?.cache_stats?.hit_rate != null
+    ? `${(health.cache_stats.hit_rate * 100).toFixed(0)}%`
+    : '—'
+
+  return (
+    <div className="bg-gray-900 border border-blue-900/40 rounded-xl px-5 py-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Zap size={13} className="text-blue-400" />
+        <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wide">
+          {t('v2.dashboard.title')}
+        </h3>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+        {/* V2 document count */}
+        <div>
+          <p className="text-xs text-gray-500">{t('v2.dashboard.documents')}</p>
+          <p className="text-lg font-bold text-white mt-0.5">
+            {docCount !== null ? docCount.toLocaleString() : '—'}
+          </p>
+        </div>
+        {/* Qdrant vector count */}
+        <div>
+          <p className="text-xs text-gray-500">{t('v2.dashboard.qdrantPoints')}</p>
+          <p className="text-lg font-bold text-white mt-0.5">
+            {health ? (health.points_count ?? 0).toLocaleString() : '—'}
+          </p>
+        </div>
+        {/* Cache hit rate */}
+        <div>
+          <p className="text-xs text-gray-500">{t('v2.dashboard.cacheHitRate')}</p>
+          <p className="text-lg font-bold text-white mt-0.5">{health ? hitRate : '—'}</p>
+        </div>
+        {/* LLM ready */}
+        <div>
+          <p className="text-xs text-gray-500">{t('v2.dashboard.llmReady')}</p>
+          <div className="flex items-center gap-1.5 mt-1">
+            {ready === null ? (
+              <div className="w-2 h-2 rounded-full bg-gray-600 animate-pulse" />
+            ) : ready?.llm ? (
+              <CheckCircle size={14} className="text-green-400" />
+            ) : (
+              <XCircle size={14} className="text-red-400" />
+            )}
+            <span className="text-xs font-mono text-blue-400 truncate">
+              {ready?.model_name || '—'}
+            </span>
+          </div>
+        </div>
+        {/* Embedder ready */}
+        <div>
+          <p className="text-xs text-gray-500">{t('v2.dashboard.embedderReady')}</p>
+          <div className="flex items-center gap-1.5 mt-1">
+            {ready === null ? (
+              <div className="w-2 h-2 rounded-full bg-gray-600 animate-pulse" />
+            ) : ready?.embedder ? (
+              <CheckCircle size={14} className="text-green-400" />
+            ) : (
+              <XCircle size={14} className="text-red-400" />
+            )}
+            <span className="text-xs font-mono text-blue-400 truncate">
+              {ready?.embedding_model || '—'}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -68,6 +179,7 @@ function ActivityTable({ activity, t }) {
             <th className="pb-2 pr-4 font-medium">{t('dashboard.colTitle')}</th>
             <th className="pb-2 pr-4 font-medium text-right">{t('dashboard.colChunks')}</th>
             <th className="pb-2 pr-4 font-medium">{t('dashboard.colStatus')}</th>
+            <th className="pb-2 pr-4 font-medium text-right">{t('dashboard.colDuration')}</th>
             <th className="pb-2 font-medium text-right">{t('dashboard.colTime')}</th>
           </tr>
         </thead>
@@ -75,11 +187,16 @@ function ActivityTable({ activity, t }) {
           {activity.map((entry) => (
             <tr key={entry.id} className="border-b border-gray-800/60 last:border-0">
               <td className="py-2.5 pr-4">
-                {entry.type === 'confluence' ? (
-                  <Globe size={13} className="text-blue-400" />
-                ) : (
-                  <FileText size={13} className="text-gray-400" />
-                )}
+                <div className="flex items-center gap-1">
+                  {entry.type === 'confluence' ? (
+                    <Globe size={13} className="text-blue-400" />
+                  ) : (
+                    <FileText size={13} className="text-gray-400" />
+                  )}
+                  {(entry.type === 'pdf' || entry.type === 'pptx') && entry.source === 'v2' && (
+                    <span className="text-[9px] font-bold text-blue-400 leading-none">V2</span>
+                  )}
+                </div>
               </td>
               <td className="py-2.5 pr-4 max-w-xs">
                 <span className="text-gray-300 truncate block" title={entry.title}>
@@ -95,12 +212,20 @@ function ActivityTable({ activity, t }) {
                     <CheckCircle size={10} />
                     {t('dashboard.success')}
                   </span>
+                ) : entry.status === 'skipped' ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded-full">
+                    <CheckCircle size={10} />
+                    {t('dashboard.skipped')}
+                  </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">
                     <XCircle size={10} />
                     {t('dashboard.failed')}
                   </span>
                 )}
+              </td>
+              <td className="py-2.5 pr-4 text-right text-gray-400 text-xs tabular-nums whitespace-nowrap">
+                {formatDuration(entry.duration_seconds)}
               </td>
               <td className="py-2.5 text-right text-gray-500 text-xs tabular-nums whitespace-nowrap">
                 {relativeTime(entry.timestamp)}
@@ -205,6 +330,9 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* V2 Index panel */}
+      <V2StatsPanel refreshKey={lastUpdated} />
+
       {/* Middle row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
@@ -304,6 +432,9 @@ export default function Dashboard() {
           {stats?.ingestion && (
             <div className="flex items-center gap-3 text-xs text-gray-500">
               <span className="text-green-400">{t('dashboard.succeeded', { count: stats.ingestion.successful })}</span>
+              {stats.ingestion.skipped > 0 && (
+                <span className="text-yellow-400">{t('dashboard.skippedCount', { count: stats.ingestion.skipped })}</span>
+              )}
               {stats.ingestion.failed > 0 && (
                 <span className="text-red-400">{t('dashboard.failedCount', { count: stats.ingestion.failed })}</span>
               )}

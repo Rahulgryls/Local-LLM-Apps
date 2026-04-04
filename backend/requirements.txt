@@ -12,6 +12,7 @@ chromadb                  # Local vector storage — no Docker needed
 
 # ── PDF Parsing ────────────────────────────────────────────
 PyMuPDF                   # Primary PDF parser (fitz) — text + image extraction
+pdfplumber                # Table extraction from native PDFs (bounding-box aware)
 pytesseract               # OCR fallback for scanned PDFs
 
 # ── Office Document Parsing ────────────────────────────────
@@ -36,3 +37,11 @@ rank_bm25                 # BM25 keyword index — used alongside vector search 
 
 # ── Query Cache ────────────────────────────────────────────
 cachetools                # TTLCache for LRU query result caching
+
+# ── V2 Document Store ─────────────────────────────────────────
+aiosqlite                 # Async SQLite access for V2 document store
+
+# ── Structured Logging ────────────────────────────────────────
+structlog                 # Structured logging for V2 pipeline
+
+qdrant-client             # Qdrant vector DB client for V2 pipeline

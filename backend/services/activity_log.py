@@ -40,20 +40,24 @@ class ActivityLog:
     def append(
         self,
         *,
-        event_type: str,          # "pdf" | "confluence"
+        event_type: str,          # "pdf" | "pptx" | "confluence"
         title: str,
         chunks_indexed: int,
-        status: str,              # "success" | "failed"
+        status: str,              # "success" | "failed" | "skipped"
         error: Optional[str] = None,
+        duration_seconds: Optional[float] = None,
+        source: str = "v1",       # "v1" | "v2"
     ) -> None:
         """Append a new ingestion event and trim to MAX_ENTRIES."""
         entry = {
             "id": str(uuid.uuid4()),
             "type": event_type,
+            "source": source,
             "title": title,
             "chunks_indexed": chunks_indexed,
             "status": status,
             "error": error,
+            "duration_seconds": round(duration_seconds, 1) if duration_seconds is not None else None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         entries = self._load()

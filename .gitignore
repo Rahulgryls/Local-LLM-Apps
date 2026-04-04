@@ -21,6 +21,8 @@ frontend/.vite/
 # Storage — never commit data or DB
 storage/chromadb/*
 storage/uploads/*
+storage/lako_v2.db
+storage/activity_log.json
 !storage/chromadb/.gitkeep
 !storage/uploads/.gitkeep
 # API keys — contains hashed credentials, never commit

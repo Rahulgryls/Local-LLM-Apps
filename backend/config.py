@@ -17,6 +17,9 @@ _DEFAULT_CONFIG = {
     "primary_model": "qwen3.5:35b-a3b-coding-nvfp4",
     "vision_model": "qwen3.5:35b-a3b-coding-nvfp4",
     "embedding_model": "nomic-embed-text",
+    # Small/fast model used exclusively for table summarisation at ingest time.
+    # Falls back to primary_model if left empty or not pulled.
+    "summarization_model": "",
     "chromadb_path": "/lako/storage/chromadb",
     "confluence_url": "https://yourbank.atlassian.net",
     "confluence_email": "",
@@ -24,6 +27,8 @@ _DEFAULT_CONFIG = {
     "top_k": 5,
     "similarity_threshold": 0.7,
     "api_key": "",
+    "qdrant_url":  "http://localhost:6333",
+    "searxng_url": "http://localhost:8080",
 }
 
 

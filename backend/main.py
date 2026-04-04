@@ -7,14 +7,17 @@ Session 12: Model pre-warming on startup, enhanced /health endpoint.
 
 import logging
 import time
+from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 
 from config import get_config
 from routers import chat, rag, ingest, confluence, models, vector, gateway, admin, dashboard
+from routers import ingest_v2, health_v2, rag_v2
 
 logger = logging.getLogger(__name__)
 
@@ -26,36 +29,48 @@ _startup_time: float = time.time()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    from services.ollama_client import ollama_client
+    from services.model_warmer import warm_models, get_status
+    from services.http_client import close_ollama_http_client
 
-    config = get_config()
+    config  = get_config()
     primary = config["primary_model"]
+    embed   = config["embedding_model"]
 
     print(f"[LAKO] Starting up...")
     print(f"[LAKO] Primary LLM  : {primary}")
     print(f"[LAKO] Vision Model : {config['vision_model']}")
-    print(f"[LAKO] Embeddings   : {config['embedding_model']}")
+    print(f"[LAKO] Embeddings   : {embed}")
     print(f"[LAKO] Ollama URL   : {config['ollama_url']}")
     print(f"[LAKO] ChromaDB     : {config['chromadb_path']}")
 
-    # ── Model pre-warming ────────────────────────────────────────────────────
-    # Sends a trivial prompt so Ollama loads the model into memory before the
-    # first real user query. Failure is non-fatal (model may not be pulled yet).
-    print(f"[LAKO] Warming up model: {primary} ...")
-    try:
-        await ollama_client.chat("Hello", model=primary)
-        _model_ready["ready"] = True
-        _model_ready["model"] = primary
-        print(f"[LAKO] Model ready    : {primary} ✓")
-    except Exception as exc:
-        _model_ready["ready"] = False
-        _model_ready["model"] = primary
-        print(f"[LAKO] Model warm-up failed: {exc}")
-        print(f"[LAKO] Run: ollama pull {primary}")
+    # ── V2 model pre-warming (LLM + embedder via shared HTTP client) ──────────
+    print(f"[LAKO] Warming models: {primary} + {embed} ...")
+    await warm_models(
+        primary_model   = primary,
+        embedding_model = embed,
+        ollama_url      = config["ollama_url"],
+    )
 
+    # Keep legacy _model_ready dict in sync for the /health endpoint
+    status = get_status()
+    _model_ready["ready"] = status["llm"]
+    _model_ready["model"] = status["model_name"] or primary
+    print(
+        f"[LAKO] LLM ready     : {status['llm']} ✓"
+        if status["llm"] else
+        f"[LAKO] LLM warm-up failed — run: ollama pull {primary}"
+    )
+    print(
+        f"[LAKO] Embedder ready: {status['embedder']} ✓"
+        if status["embedder"] else
+        f"[LAKO] Embedder warm-up failed — run: ollama pull {embed}"
+    )
     print("[LAKO] Backend ready — http://localhost:8000")
+
     yield
+
     print("[LAKO] Shutting down...")
+    await close_ollama_http_client()
 
 
 app = FastAPI(
@@ -84,11 +99,33 @@ app.include_router(vector.router,     prefix="/api", tags=["Vector DB"])
 app.include_router(gateway.router,    prefix="/api", tags=["Gateway"])
 app.include_router(admin.router,      prefix="/api", tags=["Admin"])
 app.include_router(dashboard.router,  prefix="/api", tags=["Dashboard"])
+app.include_router(ingest_v2.router,  prefix="/api", tags=["V2 Ingestion"])
+app.include_router(health_v2.router,  prefix="/api", tags=["V2 Health"])
+app.include_router(rag_v2.router,     prefix="/api", tags=["V2 RAG"])
 
 
 @app.get("/", tags=["Health"])
 async def root():
     return {"status": "ok", "service": "LAKO Backend", "version": "1.0.0"}
+
+
+@app.get("/postman", tags=["Health"])
+async def download_postman_collection():
+    """
+    Download the LAKO Postman collection JSON.
+    Open this URL in a browser or hit it in Postman to get the file.
+
+    GET http://localhost:8000/postman
+    """
+    collection_path = Path(__file__).parent.parent / "LAKO_Postman_Collection.json"
+    if not collection_path.exists():
+        raise HTTPException(status_code=404, detail="Postman collection file not found.")
+    return FileResponse(
+        path=str(collection_path),
+        media_type="application/json",
+        filename="LAKO_Postman_Collection.json",
+        headers={"Content-Disposition": "attachment; filename=LAKO_Postman_Collection.json"},
+    )
 
 
 @app.get("/health", tags=["Health"])

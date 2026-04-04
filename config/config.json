@@ -3,6 +3,7 @@
   "primary_model": "qwen3.5:35b-a3b-coding-nvfp4",
   "vision_model": "qwen3.5:35b-a3b-coding-nvfp4",
   "embedding_model": "nomic-embed-text",
+  "summarization_model": "qwen2.5:3b",
   "chromadb_path": "/Users/rahul/lako/storage/chromadb",
   "confluence_url": "https://yourbank.atlassian.net",
   "confluence_email": "",

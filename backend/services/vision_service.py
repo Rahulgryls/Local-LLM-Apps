@@ -2,7 +2,10 @@
 LAKO — Vision Service
 Processes images and diagrams extracted from documents.
 Sends image to vision model (config: vision_model) via Ollama → returns text description.
-Session 1: Stub — wired in Session 7. Session 13: model reference updated to config-driven.
+Session 1:  Stub — wired in Session 7. Session 13: model reference updated to config-driven.
+Session 16: Data-extraction vision prompt — extracts all numerical values with labels from
+            charts/figures instead of generic descriptions, preventing RAG false negatives
+            on figure-only statistical data.
 """
 
 import base64
@@ -15,9 +18,22 @@ from services.ollama_client import ollama_client
 
 
 VISION_PROMPT = (
-    "You are analyzing a document image for a bank knowledge system. "
-    "Describe this image in detail: identify charts, diagrams, tables, flowcharts, "
-    "process flows, or any structured content. Be precise and factual."
+    "You are a data extraction assistant processing a document image for a knowledge system. "
+    "Your primary goal is to extract ALL numerical values and their exact labels — do NOT give "
+    "a generic description.\n\n"
+    "If the image contains a chart, graph, or figure with data:\n"
+    "  Chart title: <title as written>\n"
+    "  Chart type: <bar / line / pie / grouped bar / etc.>\n"
+    "  X-axis label: <label if present>\n"
+    "  Y-axis label: <label if present>\n"
+    "  Data points (list every value):\n"
+    "    - <category / series label>: <exact numeric value> <unit or %>\n"
+    "    (continue for every bar, line point, or segment — do not skip any)\n"
+    "  Notes: <footnotes, asterisks, or statistical significance markers visible>\n\n"
+    "If the image contains a table: reproduce every cell as plain text rows.\n"
+    "If the image contains a flowchart or diagram: describe every node and arrow precisely.\n"
+    "If the image contains document text: transcribe it exactly.\n\n"
+    "Do not summarise. Do not skip values. If a value is illegible, write 'illegible'."
 )
 
 

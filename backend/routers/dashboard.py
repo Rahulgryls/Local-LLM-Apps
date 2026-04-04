@@ -75,7 +75,8 @@ async def get_stats():
     all_activity = activity_log.recent(limit=50)
     total_jobs = len(all_activity)
     successful_jobs = sum(1 for e in all_activity if e.get("status") == "success")
-    failed_jobs = total_jobs - successful_jobs
+    skipped_jobs    = sum(1 for e in all_activity if e.get("status") == "skipped")
+    failed_jobs     = total_jobs - successful_jobs - skipped_jobs
     last_job_at = all_activity[0].get("timestamp") if all_activity else None
 
     return {
@@ -97,6 +98,7 @@ async def get_stats():
         "ingestion": {
             "total_jobs": total_jobs,
             "successful": successful_jobs,
+            "skipped": skipped_jobs,
             "failed": failed_jobs,
             "last_job_at": last_job_at,
         },

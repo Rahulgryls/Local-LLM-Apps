@@ -49,7 +49,16 @@ class BM25Index:
             self._bm25 = None
             return
 
-        tokenized = [_tokenize(d["document"]) for d in documents]
+        tokenized = []
+        for d in documents:
+            text = d["document"]
+            summary = d.get("metadata", {}).get("table_summary", "")
+            if summary:
+                # Prepend the LLM-generated summary so BM25 can match natural-language
+                # queries (e.g. "highest uninsured rate by ethnicity") against table
+                # chunks whose raw markdown cells contain no such keywords.
+                text = summary + " " + text
+            tokenized.append(_tokenize(text))
         self._bm25 = BM25Okapi(tokenized)
         logging.info(f"BM25 index built — {len(documents)} documents")
 

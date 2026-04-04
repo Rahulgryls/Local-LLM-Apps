@@ -2,10 +2,14 @@
 LAKO — Ingestion Router
 POST /api/ingest/docs   — Upload files, run full ingestion pipeline in background
 GET  /api/ingest/status — Poll ingestion progress % by job_id
-Session 5: PDF + TXT pipeline implemented.
-Session 6: Excel, Word, PowerPoint parsers added.
+Session 5:  PDF + TXT pipeline implemented.
+Session 6:  Excel, Word, PowerPoint parsers added.
 Session 13: Vision OCR for scanned PDFs (vision model primary, Tesseract fallback);
-             PPTX slide vision pipeline (image-only slides now produce chunks).
+            PPTX slide vision pipeline (image-only slides now produce chunks).
+Session 19: File deduplication — SHA-256 hash checked before every ingest.
+            Identical file → skipped (no re-embedding, no duplicate chunks).
+            Changed file  → old chunks deleted from ChromaDB before re-ingest,
+            guaranteeing clean replacement with no stale data remaining.
 """
 
 import asyncio
@@ -17,7 +21,7 @@ from pathlib import Path
 from typing import List
 
 import aiofiles
-from fastapi import APIRouter, BackgroundTasks, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from PIL import Image as PILImage
 from pydantic import BaseModel
@@ -34,6 +38,9 @@ from services.vision_service import vision_service
 from services.bm25_index import bm25_index
 from services.activity_log import activity_log
 from services.rag_engine import invalidate_query_cache
+from services.ollama_client import ollama_client
+from services.file_registry import file_registry
+from config import get_config
 
 router = APIRouter()
 
@@ -61,6 +68,7 @@ class IngestStatusResponse(BaseModel):
 async def ingest_docs(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
+    generate_summaries: bool = Form(True),
 ):
     """
     Accept one or more files for ingestion (PDF and TXT in Session 5).
@@ -102,7 +110,7 @@ async def ingest_docs(
         "chunk_count": 0,
     }
 
-    background_tasks.add_task(_run_ingestion_pipeline, job_id, file_data)
+    background_tasks.add_task(_run_ingestion_pipeline, job_id, file_data, generate_summaries)
 
     return JSONResponse({
         "job_id": job_id,
@@ -131,7 +139,7 @@ async def ingest_status(job_id: str):
     )
 
 
-async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
+async def _run_ingestion_pipeline(job_id: str, file_data: List[dict], generate_summaries: bool = True):
     """
     Background task: runs the full ingestion pipeline for each file.
     Progress steps per file:
@@ -155,6 +163,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             filename = fd["filename"]
             content = fd["content"]
             file_chunk_counts[filename] = 0
+            file_started_at = datetime.now(timezone.utc)   # track per-file start time
             file_base = file_index / total_files        # 0.0 → 1.0
 
             def pct(step_frac: float) -> int:
@@ -166,6 +175,55 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             async with aiofiles.open(upload_path, "wb") as f:
                 await f.write(content)
             _set_job(job_id, progress=pct(0.05), message=f"Saved {filename}")
+
+            # ── Step 1b: Deduplication check ─────────────────────────────
+            # Compute SHA-256 of uploaded bytes and compare against registry.
+            # Identical file → skip entirely. Changed file → delete old chunks
+            # first so no stale/contradictory data remains in ChromaDB.
+            new_hash = file_registry.compute_hash(content)
+            existing_hash = file_registry.get_hash(filename)
+
+            if existing_hash == new_hash and chroma_client.filename_exists(filename):
+                _set_job(
+                    job_id,
+                    progress=pct(1.0),
+                    message=f"Skipped {filename} — identical file already indexed",
+                )
+                activity_log.append(
+                    event_type="pdf",
+                    title=filename,
+                    chunks_indexed=0,
+                    status="skipped",
+                    error="Identical file already in knowledge base",
+                    duration_seconds=(datetime.now(timezone.utc) - file_started_at).total_seconds(),
+                )
+                logging.info(f"[ingest] skipped '{filename}' — hash unchanged and chunks present")
+                continue
+
+            if existing_hash is not None:
+                # File changed — remove old chunks before re-ingesting
+                deleted = chroma_client.delete_by_filename(filename)
+                bm25_index.mark_dirty()
+                _set_job(
+                    job_id,
+                    message=f"Replaced {deleted} old chunk(s) for {filename}",
+                )
+                logging.info(
+                    f"[ingest] '{filename}' changed — deleted {deleted} old chunk(s)"
+                )
+            elif chroma_client.filename_exists(filename):
+                # Bootstrap fix: file was ingested before Session 19 registry existed.
+                # No hash entry, but chunks are already present — delete them for a
+                # clean replacement so we don't accumulate duplicates.
+                deleted = chroma_client.delete_by_filename(filename)
+                bm25_index.mark_dirty()
+                _set_job(
+                    job_id,
+                    message=f"[bootstrap] Replaced {deleted} pre-registry chunk(s) for {filename}",
+                )
+                logging.info(
+                    f"[ingest] '{filename}' pre-registry bootstrap — deleted {deleted} old chunk(s)"
+                )
 
             # ── Step 2: Parse ────────────────────────────────────────────
             ext = Path(filename).suffix.lower()
@@ -242,14 +300,20 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                                 logging.warning(f"[vision-ocr] Tesseract fallback failed: {fb_exc}")
 
             # ── Step 3: Build extracted dict for chunker ──────────────────
-            text_blocks = []
-            tables = []
+            # inline_blocks carry prose + embedded markdown tables (PDF/DOCX/PPTX).
+            # standalone_tables are pure table content without prose context (XLSX).
+            inline_blocks = []
+            standalone_tables = []
             for pg in parsed_doc.pages:
                 if pg.text.strip():
-                    text_blocks.append({"text": pg.text, "page": pg.page_number})
+                    inline_blocks.append({
+                        "text": pg.text,
+                        "page": pg.page_number,
+                        "significance_markers": getattr(pg, "significance_markers", ""),
+                    })
                 for table_text in pg.tables:
                     if table_text.strip():
-                        tables.append({"text": table_text, "page": pg.page_number})
+                        standalone_tables.append({"text": table_text, "page": pg.page_number})
 
             # ── Step 3b: Vision pipeline — describe images ────────────────
             image_captions = []
@@ -335,7 +399,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                 except Exception as exc:
                     logging.warning(f"[pptx-vision] slide rendering failed for {filename}: {exc}")
 
-            if not text_blocks and not tables and not image_captions:
+            if not inline_blocks and not standalone_tables and not image_captions:
                 _set_job(job_id, progress=pct(1.0), message=f"No content found in {filename} — skipped")
                 activity_log.append(
                     event_type="pdf",
@@ -343,14 +407,15 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                     chunks_indexed=0,
                     status="failed",
                     error="No extractable text content found (image-only file?)",
+                    duration_seconds=(datetime.now(timezone.utc) - file_started_at).total_seconds(),
                 )
                 continue
 
             extracted = {
-                "filename": filename,
-                "text_blocks": text_blocks,
-                "tables": tables,
-                "images": image_captions,  # vision captions from Session 7 / Session 13
+                "filename":       filename,
+                "inline_blocks":  inline_blocks,       # prose + inline markdown tables
+                "tables":         standalone_tables,   # XLSX standalone table chunks
+                "images":         image_captions,      # vision captions
             }
 
             # ── Step 4: Chunk ─────────────────────────────────────────────
@@ -365,10 +430,48 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                     chunks_indexed=0,
                     status="failed",
                     error="Chunker produced no chunks",
+                    duration_seconds=(datetime.now(timezone.utc) - file_started_at).total_seconds(),
                 )
                 continue
 
             _set_job(job_id, progress=pct(0.50), message=f"Chunked into {len(chunks)} chunk(s)")
+
+            # ── Step 4b: Generate table summaries (optional) ──────────────
+            # Controlled by generate_summaries flag from the ingest request.
+            # Uses summarization_model from config (small/fast model recommended,
+            # e.g. qwen2.5:7b). Falls back to primary_model if not configured.
+            table_chunks = [c for c in chunks if c.has_table]
+            if table_chunks and generate_summaries:
+                config = get_config()
+                summary_model = config.get("summarization_model") or config["primary_model"]
+                _set_job(
+                    job_id,
+                    message=(
+                        f"[table-summary] Summarising {len(table_chunks)} table chunk(s) "
+                        f"in {filename} using {summary_model}..."
+                    ),
+                )
+                for tc in table_chunks:
+                    try:
+                        preview = tc.content[:600]
+                        raw = await asyncio.wait_for(
+                            ollama_client.chat(
+                                f"You are summarising a table for a search index. "
+                                f"Write 2-3 sentences describing what this table is about in plain, "
+                                f"everyday language — as if explaining it to someone searching for the information. "
+                                f"Include the key numeric values and what they represent in plain terms "
+                                f"(e.g. 'The compulsory deductible is Rs.1000, which is the minimum amount "
+                                f"the policyholder must pay before insurance covers the rest'). "
+                                f"Then list: the table title or caption if visible, "
+                                f"all column headers, and the first 5 row labels.\n\n{preview}",
+                                model=summary_model,
+                            ),
+                            timeout=15.0,
+                        )
+                        tc.table_summary = raw.strip()
+                    except Exception as exc:
+                        logging.warning(f"[table-summary] failed for chunk in {filename}: {exc}")
+                        tc.table_summary = ""
 
             # ── Step 5: Embed ─────────────────────────────────────────────
             # Embed with contextual prefix so nomic-embed-text understands
@@ -389,10 +492,14 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
                     "embedding": emb,
                     "document": chunk.content,   # raw content for display + BM25
                     "metadata": {
-                        "filename": chunk.filename,
-                        "page": chunk.page,
-                        "chunk_type": chunk.chunk_type,
-                        "timestamp": now,
+                        "filename":           chunk.filename,
+                        "page":               chunk.page,
+                        "chunk_type":         chunk.chunk_type,
+                        "source_type":        chunk.chunk_type,   # Narrative / Table / Mixed / Image
+                        "has_table":          chunk.has_table,
+                        "table_summary":      chunk.table_summary,
+                        "significance_marker": chunk.significance_marker,
+                        "timestamp":          now,
                     },
                 }
                 for chunk, emb in zip(chunks, embeddings)
@@ -401,12 +508,14 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict]):
             file_chunk_counts[filename] = len(chroma_chunks)
             total_chunks += len(chroma_chunks)
             bm25_index.mark_dirty()   # trigger BM25 rebuild on next query
+            file_registry.set_hash(filename, new_hash)   # record hash for dedup
             _set_job(job_id, progress=pct(1.0), message=f"Stored {len(chroma_chunks)} chunks from {filename}")
             activity_log.append(
                 event_type="pdf",
                 title=filename,
                 chunks_indexed=len(chroma_chunks),
                 status="success",
+                duration_seconds=(datetime.now(timezone.utc) - file_started_at).total_seconds(),
             )
 
         # ── All files done ────────────────────────────────────────────────

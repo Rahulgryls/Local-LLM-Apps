@@ -1,0 +1,836 @@
+{
+  "info": {
+    "name": "LAKO — Local AI Knowledge Orchestrator",
+    "description": "Complete API collection for LAKO v1.0.0 — fully on-premises bank knowledge platform.\n\nAll Gateway endpoints require the X-API-Key header.\nSet the collection variable `api_key` to your key before using.\n\nBase URL: http://localhost:8000",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "api_key",
+      "value": "lako_QgB4rNaQBgVkkrKx7k8u_S0Klx-sJyooIBymQxCgqTw",
+      "type": "string"
+    }
+  ],
+  "item": [
+
+    {
+      "name": "1. Health",
+      "description": "System health and liveness checks. No authentication required.",
+      "item": [
+        {
+          "name": "System Health (full)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Returns full system status: model readiness, Ollama version, ChromaDB chunk count, embedding model, uptime, and query cache size.\n\nNo authentication required."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"healthy\",\n  \"model_ready\": true,\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"ollama_version\": \"0.19.0\",\n  \"chromadb_chunks\": 1250,\n  \"embedding_model\": \"nomic-embed-text\",\n  \"uptime_seconds\": 3600,\n  \"cache_size\": 12\n}"
+            }
+          ]
+        },
+        {
+          "name": "Liveness Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/",
+              "host": ["{{base_url}}"],
+              "path": [""]
+            },
+            "description": "Simple liveness probe. Returns service name and version."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"ok\",\n  \"service\": \"LAKO Backend\",\n  \"version\": \"1.0.0\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "2. Gateway (API Key Auth)",
+      "description": "Authenticated REST gateway — all endpoints require X-API-Key header.\n\nPermissions:\n- query  → POST /api/gateway/query\n- ingest → POST /api/gateway/ingest/*\n- any    → GET  /api/gateway/health",
+      "item": [
+        {
+          "name": "RAG Query",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What is the policy on third-party vendor risk in cloud contracts?\",\n  \"top_k\": 3,\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/gateway/query",
+              "host": ["{{base_url}}"],
+              "path": ["api", "gateway", "query"]
+            },
+            "description": "Query the LAKO knowledge base via the authenticated gateway.\n\nReturns the RAG answer with source citations and processing time.\n\nRequires: X-API-Key with 'query' permission.\n\nFields:\n- question (required): natural language question\n- top_k (optional, default 3): number of chunks to retrieve\n- model (optional): override the primary model"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"answer\": \"According to the vendor risk policy documents...\",\n  \"sources\": [\n    {\n      \"title\": \"Vendor_Risk_Policy_2024.pdf\",\n      \"url\": \"\",\n      \"source\": \"document\",\n      \"chunk_type\": \"text\",\n      \"excerpt\": \"Third-party vendors must complete a risk assessment...\",\n      \"score\": 0.031\n    }\n  ],\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"rag_used\": true,\n  \"processing_time\": 4.21\n}"
+            },
+            {
+              "name": "401 Unauthorized",
+              "status": "Unauthorized",
+              "code": 401,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"detail\": \"Invalid or revoked API key.\"\n}"
+            },
+            {
+              "name": "403 Forbidden",
+              "status": "Forbidden",
+              "code": 403,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"detail\": \"This key does not have 'query' permission.\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Gateway Health Check",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/gateway/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "gateway", "health"]
+            },
+            "description": "Authenticated health check — confirms the API key is valid and returns model + ChromaDB status.\n\nRequires: X-API-Key (any permission)."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"healthy\",\n  \"key_name\": \"My Integration Key\",\n  \"models\": {\n    \"primary\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n    \"vision\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n    \"embedding\": \"nomic-embed-text\"\n  },\n  \"vector_db\": {\n    \"status\": \"ok\",\n    \"total_chunks\": 1250\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Ingest Document (PDF or TXT)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "",
+                  "description": "Select a .pdf or .txt file to ingest"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/gateway/ingest/document",
+              "host": ["{{base_url}}"],
+              "path": ["api", "gateway", "ingest", "document"]
+            },
+            "description": "Synchronously ingest a single PDF or TXT document via the gateway.\n\nRequires: X-API-Key with 'ingest' permission.\n\nIn Postman:\n1. Body → form-data\n2. Key = 'file', change type to File\n3. Select your .pdf or .txt file\n\nNote: Only PDF and TXT supported via this endpoint. For DOCX/XLSX/PPTX, use the UI or POST /api/ingest/docs."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"success\",\n  \"filename\": \"policy_document.pdf\",\n  \"chunks_indexed\": 47,\n  \"processing_time\": 12.3\n}"
+            }
+          ]
+        },
+        {
+          "name": "Ingest Confluence Page",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://yourbank.atlassian.net/wiki/spaces/RISK/pages/123456\",\n  \"api_token\": \"your-confluence-api-token\",\n  \"mock\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/gateway/ingest/confluence",
+              "host": ["{{base_url}}"],
+              "path": ["api", "gateway", "ingest", "confluence"]
+            },
+            "description": "Ingest a Confluence page by URL via the gateway.\n\nRequires: X-API-Key with 'ingest' permission.\n\nFields:\n- url (required): full Confluence page URL\n- api_token (optional): Confluence personal access token\n- mock (optional, default false): use mock data for testing without real Confluence"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"success\",\n  \"page_title\": \"Cloud Outsourcing Risk Policy\",\n  \"page_id\": \"123456\",\n  \"chunks_indexed\": 18,\n  \"processing_time\": 3.1\n}"
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "3. RAG Query (Direct)",
+      "description": "Direct RAG and chat endpoints. No API key required — for internal use via the UI or testing.\n\nThe streaming endpoint returns NDJSON. Use the /sync endpoint in Postman for easy testing.",
+      "item": [
+        {
+          "name": "RAG Query — Sync (recommended for Postman)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What is our policy on cloud outsourcing?\",\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"top_k\": 3,\n  \"use_rag\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/rag/query/sync",
+              "host": ["{{base_url}}"],
+              "path": ["api", "rag", "query", "sync"]
+            },
+            "description": "Non-streaming RAG query — returns a single complete JSON response.\n\nBest for testing in Postman. The streaming endpoint (/api/rag/query) returns NDJSON tokens.\n\nFields:\n- query (required): the question\n- model (optional): override primary model\n- top_k (optional): number of chunks to retrieve\n- use_rag (optional, default true): set false for plain LLM chat without retrieval"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"answer\": \"According to the documents, the cloud outsourcing policy requires...\",\n  \"sources\": [\n    {\n      \"filename\": \"ECB_Cloud_Policy.pdf\",\n      \"page\": 5,\n      \"chunk_type\": \"text\",\n      \"score\": 0.031,\n      \"content\": \"Cloud service providers must be assessed...\"\n    }\n  ],\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"rag_used\": true,\n  \"intent\": \"single\",\n  \"sub_queries\": null,\n  \"retrieval_mode\": \"standard\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "RAG Query — Sync (Cross-document Comparison)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"Compare ACROI's Local Execution approach with ECB's stance on cloud outsourcing and operational resilience\",\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"top_k\": 3,\n  \"use_rag\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/rag/query/sync",
+              "host": ["{{base_url}}"],
+              "path": ["api", "rag", "query", "sync"]
+            },
+            "description": "Example of a cross-document comparison query that triggers the query decomposition pipeline.\n\nWhen the query contains comparison signals (compare, versus, contrast, etc.), LAKO automatically:\n1. Detects intent = 'comparison'\n2. Decomposes into focused sub-queries\n3. Retrieves independently per sub-query\n4. Assembles context with source-diversity guarantee\n5. Returns structured answer with ## headers per document\n\nResponse will have: intent='comparison', retrieval_mode='multi-doc', sub_queries=[...]"
+          },
+          "response": [
+            {
+              "name": "200 OK — Multi-doc comparison",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"answer\": \"## ACROI Local Execution Approach\\n...\\n\\n## ECB Cloud Outsourcing Policy\\n...\\n\\n## Comparison & Synthesis\\n...\",\n  \"sources\": [\n    {\n      \"filename\": \"ACROI_Sovereign_AI.pdf\",\n      \"page\": 3,\n      \"chunk_type\": \"text\",\n      \"score\": 0.028,\n      \"content\": \"Architecture Built on Persistent Evidence...\"\n    },\n    {\n      \"filename\": \"ECB_Annual_Report.pdf\",\n      \"page\": 12,\n      \"chunk_type\": \"text\",\n      \"score\": 0.025,\n      \"content\": \"Cloud outsourcing risk assessment requires...\"\n    }\n  ],\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"rag_used\": true,\n  \"intent\": \"comparison\",\n  \"sub_queries\": [\n    \"What is the ACROI approach to local execution and data sovereignty?\",\n    \"What is the ECB policy on cloud outsourcing and operational resilience?\"\n  ],\n  \"retrieval_mode\": \"multi-doc\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "RAG Query — Streaming (NDJSON)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"Summarize our vendor risk policy\",\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"top_k\": 3,\n  \"use_rag\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/rag/query",
+              "host": ["{{base_url}}"],
+              "path": ["api", "rag", "query"]
+            },
+            "description": "Streaming RAG query — returns NDJSON (newline-delimited JSON) tokens.\n\nEach line is a JSON object:\n  {\"t\":\"cache_hit\",\"v\":false}         — first line\n  {\"t\":\"meta\",\"v\":{intent,...}}       — intent + retrieval mode\n  {\"t\":\"token\",\"v\":\"word \"}           — one per LLM token\n  {\"t\":\"sources\",\"v\":[...]}           — source citations at end\n  {\"t\":\"error\",\"v\":\"message\"}         — on failure\n\nNote: Postman will show the raw NDJSON stream. Use /sync for readable output."
+          }
+        },
+        {
+          "name": "Direct Chat (no RAG)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"Explain what operational resilience means for a bank\",\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "Direct LLM chat — no document retrieval. Uses the configured primary model.\n\nSet stream=false for a clean JSON response in Postman.\nSet stream=true (default) to receive plain text token stream.\n\nFields:\n- prompt (required): question or instruction\n- model (optional): override primary model\n- stream (optional, default true): set false for full JSON response"
+          },
+          "response": [
+            {
+              "name": "200 OK (stream=false)",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"answer\": \"Operational resilience refers to...\",\n  \"model\": \"qwen3.5:35b-a3b-coding-nvfp4\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "4. Document Ingestion",
+      "description": "Upload and ingest documents (PDF, DOCX, XLSX, PPTX, TXT) into the knowledge base.",
+      "item": [
+        {
+          "name": "Upload Documents",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "files",
+                  "type": "file",
+                  "src": "",
+                  "description": "Select one or more files: .pdf .docx .xlsx .pptx .txt"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/ingest/docs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ingest", "docs"]
+            },
+            "description": "Upload one or more documents for ingestion.\n\nSupported: .pdf, .docx, .xlsx, .pptx, .txt\n\nRuns asynchronously in the background. Returns a job_id — poll /api/ingest/status to track progress.\n\nIn Postman:\n1. Body → form-data\n2. Key = 'files', change type to File\n3. Select your document(s)\n4. Copy job_id from response, then use 'Check Ingestion Status'"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"job_id\": \"f3a2b1c0-1234-5678-abcd-ef0123456789\",\n  \"accepted_files\": [\"policy.pdf\"],\n  \"rejected_files\": [],\n  \"message\": \"Ingestion started for 1 file(s).\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Check Ingestion Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ingest/status?job_id=YOUR_JOB_ID_HERE",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ingest", "status"],
+              "query": [
+                {
+                  "key": "job_id",
+                  "value": "YOUR_JOB_ID_HERE",
+                  "description": "job_id returned from POST /api/ingest/docs"
+                }
+              ]
+            },
+            "description": "Poll ingestion progress by job_id.\n\nReplace YOUR_JOB_ID_HERE with the job_id returned from the upload endpoint.\n\nStatus values: pending → processing → complete | error\nProgress: 0–100"
+          },
+          "response": [
+            {
+              "name": "200 OK — Complete",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"job_id\": \"f3a2b1c0-1234-5678-abcd-ef0123456789\",\n  \"status\": \"complete\",\n  \"progress\": 100,\n  \"message\": \"Done. 47 chunk(s) indexed across 1 file(s).\",\n  \"chunk_count\": 47\n}"
+            },
+            {
+              "name": "200 OK — Processing",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"job_id\": \"f3a2b1c0-1234-5678-abcd-ef0123456789\",\n  \"status\": \"processing\",\n  \"progress\": 55,\n  \"message\": \"Embedding 23 chunks...\",\n  \"chunk_count\": 0\n}"
+            }
+          ]
+        },
+        {
+          "name": "Ingest Confluence Page",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://yourbank.atlassian.net/wiki/spaces/RISK/pages/123456\",\n  \"api_token\": \"your-confluence-api-token\",\n  \"mock\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/ingest/confluence",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ingest", "confluence"]
+            },
+            "description": "Ingest a single Confluence page by URL.\n\nSet mock=true to test with synthetic data without a real Confluence instance.\n\nReturns a job_id — poll /api/ingest/confluence/status to track progress."
+          }
+        },
+        {
+          "name": "Check Confluence Ingestion Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ingest/confluence/status?job_id=YOUR_JOB_ID_HERE",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ingest", "confluence", "status"],
+              "query": [
+                {
+                  "key": "job_id",
+                  "value": "YOUR_JOB_ID_HERE"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "5. Models & Config",
+      "description": "Model listing and configuration management.",
+      "item": [
+        {
+          "name": "List Chat Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "models", "chat"]
+            },
+            "description": "Returns only models appropriate for chat/RAG — filters out embedding, deprecated, and specialist-only models.\n\nUsed by the Chat page model selector."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"models\": [\"qwen3.5:35b-a3b-coding-nvfp4\"],\n  \"default\": \"qwen3.5:35b-a3b-coding-nvfp4\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "List All Ollama Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models",
+              "host": ["{{base_url}}"],
+              "path": ["api", "models"]
+            },
+            "description": "Returns all installed Ollama models with role assignments (primary, vision, embedding) and per-role health flags.\n\nUsed by the Settings page."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"models\": [\n    {\"name\": \"qwen3.5:35b-a3b-coding-nvfp4\", \"size\": \"~22.0 GB\", \"modified\": \"2025-03-01T00:00:00Z\"},\n    {\"name\": \"nomic-embed-text:latest\", \"size\": \"~0.3 GB\", \"modified\": \"2025-01-01T00:00:00Z\"}\n  ],\n  \"primary_model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"vision_model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"embedding_model\": \"nomic-embed-text\",\n  \"ollama_reachable\": true,\n  \"model_health\": {\n    \"primary_model\": true,\n    \"vision_model\": true,\n    \"embedding_model\": true\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Read Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Returns the current config.json contents."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"ollama_url\": \"http://localhost:11434\",\n  \"primary_model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"vision_model\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n  \"embedding_model\": \"nomic-embed-text\",\n  \"chromadb_path\": \"/Users/rahul/lako/storage/chromadb\",\n  \"top_k\": 3,\n  \"similarity_threshold\": 0.25,\n  \"gateway_enabled\": true\n}"
+            }
+          ]
+        },
+        {
+          "name": "Update Config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"top_k\": 5,\n  \"similarity_threshold\": 0.25\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Update one or more config fields. Only provided fields are updated — others remain unchanged.\n\nUpdatable fields: primary_model, vision_model, embedding_model, ollama_url, chromadb_path, confluence_url, confluence_email, confluence_token, top_k, similarity_threshold"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"saved\",\n  \"config\": {\n    \"top_k\": 5,\n    \"similarity_threshold\": 0.25\n  }\n}"
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "6. Vector DB",
+      "description": "ChromaDB status and management.",
+      "item": [
+        {
+          "name": "Vector DB Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/vector/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "vector", "status"]
+            },
+            "description": "Returns ChromaDB health, collection name, total chunk count, and storage path."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"ok\",\n  \"collection\": \"lako_documents\",\n  \"total_chunks\": 1250,\n  \"chromadb_path\": \"/Users/rahul/lako/storage/chromadb\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Clear Vector DB ⚠️",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/vector/clear",
+              "host": ["{{base_url}}"],
+              "path": ["api", "vector", "clear"]
+            },
+            "description": "⚠️  DESTRUCTIVE — Deletes ALL document chunks from ChromaDB.\n\nThe collection is recreated immediately as empty. All ingested knowledge is lost. Re-ingestion required to restore knowledge base."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"cleared\",\n  \"deleted_chunks\": 1250\n}"
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "7. Dashboard",
+      "description": "Real-time system stats and ingestion activity.",
+      "item": [
+        {
+          "name": "Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/dashboard/stats",
+              "host": ["{{base_url}}"],
+              "path": ["api", "dashboard", "stats"]
+            },
+            "description": "Returns full system stats: total documents, chunk counts by source, model status, ingestion history summary, active API keys, and uptime."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"vector_db\": {\n    \"total_chunks\": 1250,\n    \"total_documents\": 24,\n    \"sources\": {\"pdf\": 1200, \"confluence\": 50},\n    \"last_updated\": \"2026-04-01T10:30:00Z\"\n  },\n  \"models\": {\n    \"primary\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n    \"vision\": \"qwen3.5:35b-a3b-coding-nvfp4\",\n    \"embeddings\": \"nomic-embed-text\",\n    \"ollama_status\": \"healthy\"\n  },\n  \"ingestion\": {\n    \"total_jobs\": 30,\n    \"successful\": 28,\n    \"failed\": 2,\n    \"last_job_at\": \"2026-04-01T09:00:00Z\"\n  },\n  \"api_keys\": {\"total\": 2, \"active\": 2},\n  \"system\": {\"uptime_seconds\": 7200, \"backend_version\": \"1.0.0\"}\n}"
+            }
+          ]
+        },
+        {
+          "name": "Recent Activity",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/dashboard/recent-activity",
+              "host": ["{{base_url}}"],
+              "path": ["api", "dashboard", "recent-activity"]
+            },
+            "description": "Returns the last 10 ingestion events from the activity log."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "[\n  {\n    \"type\": \"pdf\",\n    \"title\": \"ECB_Annual_Report_2024.pdf\",\n    \"chunks_indexed\": 83,\n    \"status\": \"success\",\n    \"timestamp\": \"2026-04-01T09:00:00Z\"\n  }\n]"
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "8. Admin — API Key Management",
+      "description": "⚠️  Admin endpoints — no authentication required.\nIn production these are firewalled to localhost / admin VLAN only.\n\nManage API keys: create, list, revoke, delete.",
+      "item": [
+        {
+          "name": "Create API Key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Integration Key\",\n  \"permissions\": [\"query\", \"ingest\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/admin/keys",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "keys"]
+            },
+            "description": "Generate a new API key.\n\n⚠️  The full key is returned ONCE and never stored. Copy it immediately.\n\nPermissions:\n- 'query'  → allows POST /api/gateway/query\n- 'ingest' → allows POST /api/gateway/ingest/*\n\nBoth permissions can be granted together: [\"query\", \"ingest\"]"
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"key\": \"lako_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890abcdef\",\n  \"id\": \"a1b2c3d4-1234-5678-abcd-ef0123456789\",\n  \"prefix\": \"lako_AbCdEf\",\n  \"warning\": \"Save this key immediately. It will never be shown again.\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "List API Keys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/admin/keys",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "keys"]
+            },
+            "description": "List all API keys — shows metadata only (no full key values, no hashes)."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "[\n  {\n    \"id\": \"a1b2c3d4-1234-5678-abcd-ef0123456789\",\n    \"name\": \"Postman Integration Key\",\n    \"prefix\": \"lako_QgB4rN\",\n    \"created_at\": \"2026-04-01T08:00:00Z\",\n    \"last_used\": \"2026-04-01T10:30:00Z\",\n    \"is_active\": true,\n    \"permissions\": [\"query\", \"ingest\"]\n  }\n]"
+            }
+          ]
+        },
+        {
+          "name": "Revoke API Key",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/admin/keys/KEY_ID_HERE/revoke",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "keys", "KEY_ID_HERE", "revoke"]
+            },
+            "description": "Revoke an API key — marks it inactive but keeps the record for audit purposes.\n\nReplace KEY_ID_HERE with the key's id from List API Keys."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"revoked\": true,\n  \"id\": \"a1b2c3d4-1234-5678-abcd-ef0123456789\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Delete API Key ⚠️",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/admin/keys/KEY_ID_HERE",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "keys", "KEY_ID_HERE"]
+            },
+            "description": "Permanently delete an API key by ID.\n\n⚠️  Irreversible. The key can no longer be used.\n\nReplace KEY_ID_HERE with the key's id from List API Keys."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"deleted\": true,\n  \"id\": \"a1b2c3d4-1234-5678-abcd-ef0123456789\"\n}"
+            }
+          ]
+        }
+      ]
+    }
+
+  ]
+}

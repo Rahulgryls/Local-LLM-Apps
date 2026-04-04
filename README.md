@@ -1,10 +1,12 @@
 # LAKO — Local AI Knowledge Orchestrator
 
-**Version:** V1
-**Build:** 14 sessions / 4–5 weeks
+**Version:** V1 + V2 (complete)
+**Build:** 22 sessions (V1) + V2 Session 5 complete (all 5 V2 sessions done)
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Session 14 complete — 2026-04-01
+**Last updated:** V2 Session 5 + V2 clear index + bug fixes — 2026-04-04
+
+> **V2 "Smart Index, Full Context" architecture — fully built.** V1 endpoints remain fully functional. V2 has a complete parallel pipeline under `/api/v2/`: SQLite document store + Qdrant vector index, LLM page summaries as the search index, full raw-page text as reasoning context, SSE streaming with timing, query + embedding cache, model pre-warming, and SearXNG web search mode. The React frontend is fully updated for V2.
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -47,7 +49,7 @@ Everything runs on a server inside the bank. No question, no document, and no an
 | Vision Model | qwen3.5:35b-a3b-coding-nvfp4 | Same model as primary — used for image description, PPTX slide rendering, and scanned PDF OCR. Single model for all tasks eliminates cold-start model switching. |
 | Embeddings | nomic-embed-text | Converts text into numerical vectors (lists of numbers). Two pieces of text that mean similar things will produce similar vectors. This is how ChromaDB can find relevant document chunks from a question — by comparing vector similarity. |
 | Vector DB | ChromaDB | A local database that stores document chunks as vectors. When you ask a question, LAKO converts your question to a vector and ChromaDB finds the stored chunks with the closest vectors. No Docker required — runs as a Python library. |
-| PDF Parsing | PyMuPDF (fitz) | Python library for reading PDFs. Extracts text page by page, and also extracts embedded images for vision processing. |
+| PDF Parsing | PyMuPDF (fitz) + pdfplumber | PyMuPDF extracts text blocks with bounding boxes. pdfplumber detects tables and their exact positions. Both are merged by y-coordinate so the output is a unified inline flow: prose → markdown table → prose. |
 | OCR Primary | qwen3.5 vision | Scanned PDF pages (< 50 chars extracted) are rendered as PNG and sent to the vision model with a text-extraction prompt. Significantly better Dutch-language quality than Tesseract. Session 13. |
 | OCR Fallback | Tesseract | Fallback if the vision model times out or errors. Still installed — `brew install tesseract`. |
 | Excel Parsing | openpyxl + pandas | openpyxl reads .xlsx files. pandas converts spreadsheet data into structured text that can be chunked and embedded. |
@@ -82,6 +84,15 @@ Everything runs on a server inside the bank. No question, no document, and no an
 | Embeddings only | nomic-embed-text | ~0.5 GB |
 
 Single-model stack eliminates cold-start swapping. Ollama auto-unloads after 5 minutes idle.
+
+---
+
+## Recent Sessions
+
+| Session | Key Changes |
+|---|---|
+| 21 | Claude-style Chat UI — conversation thread, stop button, edit message, typing dots, auto-scroll |
+| 22 | **Multi-topic intent class** — queries with multiple independent "?" now route through decompose→per-sub-query retrieval→multi-topic synthesis prompt. Cache refresh button (GET /api/cache/stats, DELETE /api/cache) with frontend badge in Chat toolbar. Table summary prompt improved to paraphrase values in plain language for better BM25 matching. Dashboard "Time Consumed" column. Skipped badge fix. |
 
 ---
 
@@ -201,10 +212,16 @@ lako/
 │       │                             via Ollama. Used during ingestion and RAG queries.
 │       │                             STUB until Session 4.
 │       │
-│       ├── chunker.py              ← Splits large text into 300–600 token chunks with
-│       │                             50–100 token overlap. Overlap ensures a sentence at
-│       │                             the edge of one chunk is also in the next chunk.
-│       │                             STUB until Session 4.
+│       ├── chunker.py              ← Splits extracted document text into overlapping chunks.
+│       │                             chunk_inline() — primary path for PDF/DOCX/PPTX:
+│       │                             handles mixed prose + embedded markdown tables, never
+│       │                             splits a table mid-body. chunk_table() — primary path
+│       │                             for XLSX: header-prepend splitting for oversized tables
+│       │                             (column names repeated in every sub-chunk).
+│       │                             chunk_text() — sliding window for plain prose/TXT.
+│       │                             Chunk dataclass carries has_table + table_summary.
+│       │                             Session 4: initial implementation.
+│       │                             Session 15: chunk_inline, header-prepend split, has_table.
 │       │
 │       ├── rag_engine.py           ← Orchestrates the full RAG pipeline: embed question →
 │       │                             search ChromaDB → threshold filter → _build_prompt()
@@ -213,6 +230,16 @@ lako/
 │       │                             use_rag=false: calls LLM directly (no retrieval).
 │       │                             No chunks above threshold → canned not-found message.
 │       │                             LIVE (Session 8).
+│       │                             Session 16: (1) Citation-anchored context format
+│       │                             ([filename, Page X] per chunk) + system prompt
+│       │                             instructs inline citation. (2) Within-doc comparison
+│       │                             guard: BM25 pre-scan collapses decomposed sub-queries
+│       │                             to unified retrieval when all resolve to same file;
+│       │                             table boost adds flat RRF bonus for has_table chunks
+│       │                             on comparison queries. (3) Filename metadata routing:
+│       │                             alias lookup (acronyms + stem + body words per file)
+│       │                             scopes ChromaDB + BM25 to a single file when ≥2
+│       │                             query tokens match.
 │       │
 │       ├── vision_service.py       ← Sends images to vision model (config: vision_model) and
 │       │                             gets back a text description. Called during PDF ingestion
@@ -221,6 +248,12 @@ lako/
 │       │                             via Pillow (min 100×100), base64-encodes, calls ollama.
 │       │                             Session 13: stale llava:13b references removed — model
 │       │                             always read from config, never hardcoded.
+│       │                             Session 16: VISION_PROMPT upgraded from generic "describe
+│       │                             this image" to structured data-extraction prompt — model
+│       │                             now extracts chart title, axis labels, and every data
+│       │                             point with exact value + label, preventing RAG false
+│       │                             negatives on figure-only statistical data (e.g. bar
+│       │                             charts showing uninsured rates by income bracket).
 │       │
 │       ├── confluence_client.py    ← Fetches a Confluence page by URL using the Confluence
 │       │                             REST API (v2 Cloud + v1 Server/DC fallback). Parses HTML
@@ -235,17 +268,33 @@ lako/
 │           │                         runs async in ingest.py. _ocr_page_tesseract(png_bytes)
 │           │                         remains as fallback. ParsedPage gains ocr_mode +
 │           │                         ocr_png_bytes fields.
+│           │                         Session 15: pdfplumber table extraction — tables inserted
+│           │                         inline at their vertical position via y-coordinate merge
+│           │                         with PyMuPDF get_text("dict") text blocks. Output is a
+│           │                         unified prose + markdown table flow per page.
+│           │                         Session 16: caption capture — text block ≤30px above
+│           │                         each table bounding box is prepended to the table
+│           │                         markdown so "Table 1.1 WEO Projections" becomes part
+│           │                         of the chunk text, not just metadata.
 │           ├── txt_parser.py       ← Plain text reader. Session 5: Fully implemented.
 │           ├── excel_parser.py     ← openpyxl + pandas. Each sheet → ParsedPage.
-│           │                         Pipe-separated table stored in page.tables so the
-│           │                         chunker keeps each sheet intact as one chunk.
 │           │                         Session 6: Fully implemented.
-│           ├── word_parser.py      ← python-docx. Headings (# ## ###) + paragraphs →
-│           │                         page.text. Tables → page.tables (pipe-separated).
+│           │                         Session 15: Tables emitted as markdown (| col | col |).
+│           │                         page.text = lightweight rule-based summary (sheet name +
+│           │                         column names + row count) → searchable anchor chunk.
+│           │                         page.tables = full markdown table → chunk_table() with
+│           │                         header-prepend splitting if oversized.
+│           ├── word_parser.py      ← python-docx. Walks doc.element.body in document order.
+│           │                         Headings (# ## ###) + paragraphs → page.text inline
+│           │                         with markdown tables. Tables emitted as markdown at
+│           │                         their document position — never separated from context.
 │           │                         Session 6: Fully implemented.
+│           │                         Session 15: Inline table flow (tables in page.text).
 │           └── ppt_parser.py       ← python-pptx. Each slide → ParsedPage.
 │                                     Title (# prefix) + text boxes + speaker notes.
 │                                     Session 6: Fully implemented.
+│                                     Session 15: shape.has_table detection — tables emitted
+│                                     as markdown inline with slide text (same chunk context).
 │                                     Session 13: _render_slides_to_images() — LibreOffice
 │                                     headless primary, Pillow shape-composite fallback.
 │                                     Image-only slides now produce chunks via vision pipeline.
@@ -303,15 +352,18 @@ lako/
 │       │   │                         SourceCitations component shows filename/page/score.
 │       │   │                         RAG OFF → POST /api/chat stream=true, ReadableStream
 │       │   │                         + TextDecoder, tokens rendered as they arrive.
-│       │   │                         Model dropdown from Zustand availableModels.
+│       │   │                         Model dropdown shows all downloaded Ollama models
+│       │   │                         (excluding embedding), with size + ★ for default.
 │       │   │                         Clear button. Enter sends, Shift+Enter newline.
-│       │   │                         LIVE (Session 8).
+│       │   │                         LIVE (Session 8). Session 15: model size + star display.
 │       │   │
 │       │   ├── DocumentIngestion.jsx ← /ingest/docs route.
 │       │   │                           File upload UI with drag-and-drop zone.
 │       │   │                           Session 5: PDF + TXT fully wired. DOCX/XLSX/PPTX in Session 6.
 │       │   │                           Session 7: Eye icon shown next to progress label when
 │       │   │                           status message contains "vision" or "image".
+│       │   │                           Session 15: "Generate table summaries" toggle — controls
+│       │   │                           optional LLM summary call per table chunk at ingest time.
 │       │   │                           POSTs to /api/ingest/docs, polls /api/ingest/status every 3s.
 │       │   │                           Shows live progress bar and chunk count on completion.
 │       │   │
@@ -329,10 +381,12 @@ lako/
 │       │   │
 │       │   └── Settings.jsx        ← /settings route.
 │       │                             Form with all configurable fields:
-│       │                             Model names per role, Ollama URL, ChromaDB path,
+│       │                             Model names per role (primary, vision, embedding,
+│       │                             summarization), Ollama URL, ChromaDB path,
 │       │                             Confluence URL/email/token, Top-K, threshold.
 │       │                             Save writes back to config.json via backend.
-│       │                             STUB — persistence wired in Session 3.
+│       │                             Session 3: persistence wired.
+│       │                             Session 15: summarization_model field added.
 │       │
 │       ├── hooks/                  ← Custom React hooks for data fetching.
 │       │   └── useDashboard.js     ← Polls /api/dashboard/stats every 30s.
@@ -410,6 +464,11 @@ lako/
 │       ├── technical_reference.md  ← Files changed, functions, data flow
 │       └── debugging_guide.md      ← Errors encountered + hypothetical future errors
 │
+├── LAKO_Postman_Collection.json    ← Postman collection with all LAKO API endpoints.
+│                                     Import into Postman for interactive API testing.
+│                                     Also downloadable at runtime via GET /postman.
+│                                     Session 15: added.
+│
 ├── start_backend.sh                ← Convenience script to activate venv and start uvicorn
 ├── start_frontend.sh               ← Convenience script to run npm run dev
 └── verify_session1.sh              ← Checks all Session 1 requirements pass
@@ -423,17 +482,18 @@ Every setting LAKO uses comes from this one file. Edit it and restart the backen
 
 ```json
 {
-  "ollama_url":           "http://localhost:11434",
-  "primary_model":        "qwen3.5:35b-a3b-coding-nvfp4",
-  "vision_model":         "qwen3.5:35b-a3b-coding-nvfp4",
-  "embedding_model":      "nomic-embed-text",
-  "chromadb_path":        "/lako/storage/chromadb",
-  "confluence_url":       "https://yourbank.atlassian.net",
-  "confluence_email":     "",
-  "confluence_token":     "",
-  "top_k":                5,
-  "similarity_threshold": 0.7,
-  "api_key":              ""
+  "ollama_url":             "http://localhost:11434",
+  "primary_model":          "qwen3.5:35b-a3b-coding-nvfp4",
+  "vision_model":           "qwen3.5:35b-a3b-coding-nvfp4",
+  "embedding_model":        "nomic-embed-text",
+  "summarization_model":    "",
+  "chromadb_path":          "/lako/storage/chromadb",
+  "confluence_url":         "https://yourbank.atlassian.net",
+  "confluence_email":       "",
+  "confluence_token":       "",
+  "top_k":                  5,
+  "similarity_threshold":   0.25,
+  "api_key":                ""
 }
 ```
 
@@ -443,6 +503,7 @@ Every setting LAKO uses comes from this one file. Edit it and restart the backen
 | `primary_model` | The LLM that answers questions. Change to `qwen3:14b` or `qwen3:32b` on a server with more RAM. |
 | `vision_model` | The model used to describe images extracted from PDFs. |
 | `embedding_model` | The model that converts text to vectors. Must match what was used during ingestion. |
+| `summarization_model` | Optional small/fast model (e.g. `qwen2.5:7b`) used exclusively to generate one-sentence table summaries at ingest time. Falls back to `primary_model` if left empty. Recommended: pull a 7B model to avoid tying up the primary 35B model during ingestion. |
 | `chromadb_path` | Where ChromaDB stores its files on disk. |
 | `confluence_url` | Your Confluence base URL. |
 | `confluence_email` | Your Confluence login email (used for API auth). |
@@ -460,13 +521,14 @@ All endpoints are prefixed with `/api`. The FastAPI Swagger UI at `http://localh
 | Method | Endpoint | Status | What It Does |
 |---|---|---|---|
 | GET | `/` | LIVE | Health check. Returns `{"status":"ok"}`. |
+| GET | `/postman` | LIVE | Download the LAKO Postman collection JSON. Open in browser or hit from Postman. Session 15. |
 | GET | `/health` | LIVE | Returns `{"status":"healthy"}`. |
 | GET | `/api/models` | LIVE | Returns all installed Ollama models + role assignments from config + per-role health booleans (`model_health`). |
 | GET | `/api/config` | LIVE | Returns full contents of config.json. |
 | POST | `/api/config` | LIVE | Accepts any config fields as JSON. Saves to config.json, reloads config cache, returns updated config. |
 | POST | `/api/chat` | STUB | Send a prompt directly to the primary LLM. No document search. Returns the LLM's answer. |
 | POST | `/api/rag/query` | STUB | Send a question. LAKO searches documents, injects results, returns answer + sources. |
-| POST | `/api/ingest/docs` | LIVE | Upload PDF, TXT, XLSX, DOCX, or PPTX files. Saves to `/storage/uploads/`, runs full parse → chunk → embed → store pipeline in background. Returns `job_id`. |
+| POST | `/api/ingest/docs` | LIVE | Upload PDF, TXT, XLSX, DOCX, or PPTX files. Optional `generate_summaries` form field (bool, default `true`) — when true, generates a one-sentence LLM summary per table chunk at ingest. Saves to `/storage/uploads/`, runs full parse → chunk → embed → store pipeline in background. Returns `job_id`. |
 | GET | `/api/ingest/status` | LIVE | Poll ingestion progress. Pass `?job_id=...`. Returns `status`, `progress` (0–100), `message`, and `chunk_count` when complete. |
 | POST | `/api/ingest/confluence` | LIVE | Pass `url` + optional `api_token`. Returns `job_id` immediately. Runs ingestion in background. Add `mock: true` to test without a real Confluence instance. |
 | GET | `/api/ingest/confluence/status` | LIVE | Poll Confluence job progress. Pass `?job_id=...`. Returns `status`, `progress` (0–100), `message`, `chunks_indexed`, `page_title`. |
@@ -565,6 +627,12 @@ http://localhost:5173
 | 12 | Claude Code | COMPLETE | i18n EN + NL: react-i18next, en.json + nl.json translation files, LanguageSwitcher.jsx EN/NL pill toggle, all pages + components use useTranslation hook, language persists in localStorage |
 | 13 | Claude Code | COMPLETE | Vision upgrade — single model pipeline: vision OCR for scanned PDFs (vision model primary, Tesseract fallback), PPTX slide vision pipeline (image-only slides now produce chunks), stale llava references removed, config.py defaults updated to qwen3.5:35b-a3b-coding-nvfp4 |
 | 14 | Claude Code | COMPLETE | Query decomposition pipeline (5-stage: intent classifier → LLM decomposer → per-sub-query retrieval → context assembly with source-diversity guarantee → intent-aware synthesis prompt). Scanned PDF fix: similarity_threshold 0.4→0.25, improved Dutch OCR prompt. Model dropdown fix: /api/models/chat endpoint, Chat.jsx pre-selects config default. Enhanced /health endpoint (ollama_version, chromadb_chunks, embedding_model, uptime_seconds, cache_size). Multi-doc badge + grouped SourceCitations. RAGResponse extended with intent/sub_queries/retrieval_mode. |
+| 15 | Claude Code | COMPLETE | Inline table architecture across all parsers. PDF: pdfplumber table extraction — tables and prose merged by y-coordinate into a single inline flow per page (no more separate tables list). DOCX/PPTX: tables emitted as markdown at their document position — inline with surrounding prose. XLSX: markdown table output + lightweight rule-based sheet summary chunk. Chunker: chunk_inline() — primary path for PDF/DOCX/PPTX, never splits tables mid-body; chunk_table() — header-prepend splitting for oversized XLSX tables; Chunk gains has_table + table_summary fields. Table summaries: optional LLM step at ingest (generate_summaries toggle in UI, summarization_model config key, falls back to primary). Models API: removed hardcoded blocklist — all downloaded models shown in chat selector (excluding embedding model only), with model size and ★ for default. GET /postman endpoint + LAKO_Postman_Collection.json added. |
+| 16 | Claude Code | COMPLETE | Four targeted retrieval-quality fixes + vision prompt upgrade. Fix 1: Table summary prompt upgraded — now requests title/caption, all column headers, and first 5 row labels so BM25 can hit tables directly on entity names (e.g. "Advanced Economies", "EMDE"). PDF caption capture added: pdfplumber detects text block ≤30px above each table bounding box and prepends it to the table chunk — title text becomes part of the searchable content, not just metadata. Fix 2: Citation format in all three synthesis prompts (standard / comparison / aggregation) — LLM now instructed to cite inline as [filename, Page X]; context blocks reformatted with the same anchor pattern so the model can copy it. Fix 3: Within-document comparison guard — after LLM decomposition, a synchronous BM25 pre-scan (top-1 per sub-query, no Ollama call) checks whether all sub-queries resolve to the same file; if so, collapses to a single unified retrieval instead of splitting. Table boost added: when collapsed and the query contains comparison signals or year-pairs, has_table chunks receive a flat RRF score bonus so the relevant table ranks above prose. Fix 4: Filename metadata routing — alias lookup built from first chunk of each document (acronyms + stem words + body words); at query time, if ≥2 query tokens match a file's alias set, ChromaDB and BM25 retrieval are scoped to that file only, eliminating cross-document bleed for named queries. Fix 5: VISION_PROMPT in vision_service.py upgraded from generic image description to structured data-extraction prompt — model now outputs chart title, axis labels, and every data point (category label + exact value + unit), preventing RAG false negatives on figure-only statistical data such as bar charts showing rates by income bracket. |
+| 17 | Claude Code | COMPLETE | Three production-hardening fixes. Fix 1 (Significance Detection): pdf_parser.py scans table cells for statistical significance markers (*, †, ‡, §, ¶, ^). Markers flow through ParsedPage.significance_markers → Chunk.significance_marker → ChromaDB metadata field, making them queryable and available to the LLM. Fix 2 (Contextual Row/Column Injection): _table_data_to_markdown now renders each data cell as "ColHeader: value" (e.g. "Category: Hispanic | Year: 2022 | Uninsured Rate: 8.6%") — rows are self-contained after any chunk split, model never loses header context. Markdown structure (| prefix) preserved so chunker table detection and has_table flag continue to work. Fix 3 (Reasoning-Check Prompting): _SIGNIFICANCE_REASONING paragraph appended to all three system prompts — model instructed to report significance markers when present, note their absence when discussing numerical changes, and never infer statistical significance from magnitude alone. Fix 4 (skipped — similarity threshold already enforced at 0.7 in config.json, stricter than proposed 0.65). |
+| 18 | Claude Code | COMPLETE | Two targeted retrieval depth fixes for deep-table queries. Fix 1 (Deep Retrieval for Collapsed Queries): when the within-doc comparison guard collapses sub-queries to a single document, _hybrid_search now uses _SINGLE_DOC_COLLAPSED_RETRIEVE=20 candidates (up from top_k=5) before MMR trims to _SINGLE_DOC_COLLAPSED_FINAL=10. Prevents deep demographic table rows (e.g. Table A-1 Nativity section) from being cut off by a shallow top-K. Applied to both _multi_doc_query and _stream_multi_doc collapsed branches. Fix 2 (Raw-text Safety Net): _extract_page_inline in pdf_parser.py now appends the raw PyMuPDF page text as a supplementary block when pdfplumber detected table regions but the resulting inline text is <70% the length of the raw text — catches large appendix tables (merged cells, indented row groups) that pdfplumber fragments or partially misses. |
+| 19 | Claude Code | COMPLETE | File deduplication — SHA-256 hash registry. New file_registry.py service stores filename → hash in storage/file_registry.json. Ingest pipeline (Step 1b) computes hash of uploaded bytes before parsing: identical file → skip with "skipped" status in activity log (no re-embedding, no duplicate chunks); changed file → chroma_client.delete_by_filename() removes all existing chunks for that filename before re-ingest, guaranteeing clean replacement. chroma_client.py: new delete_by_filename() uses ChromaDB where-filter delete. Hash registered only after successful ChromaDB store so partial failures leave no ghost entries. |
+| 20 | Claude Code | COMPLETE | Multi-source conflict handling — industry standard three-layer approach. Layer 1 (Conflict Detection Prompt): _CONFLICT_DETECTION instruction added to all three system prompts — LLM scans retrieved context for same topic across multiple sources; when values/dates/rules differ it presents each source separately with citation and writes "Note: Sources differ on this point" rather than silently blending. Layer 2 (Recency Bias): _apply_recency_bias() added — exponential decay bonus (max 0.01) based on chunk ingestion timestamp, applied after RRF fusion in _hybrid_search. Acts as tiebreaker when topic overlap exists between docs; more recently ingested chunks rank slightly higher. Layer 3 (Date in Context + Citations): _build_prompt now injects ingestion date into every citation header [filename, Page X, Ingested: YYYY-MM-DD] so LLM can reason about recency. _format_sources returns ingested_date field. SourceCitations.jsx displays ingested date in both flat and grouped citation cards. |
 
 ---
 
@@ -839,6 +907,71 @@ LAKO's documentation is designed to be uploaded to NotebookLM to create a privat
 **What this gives you:** The ability to ask NotebookLM questions like *"Which file handles PDF parsing?"* or *"What does the chunker do?"* and get accurate answers with citations from your own documentation.
 
 ---
+
+---
+
+## V2 Session 4 — Performance Optimization + Caching
+
+**Completed: 2026-04-03**
+
+### What was built
+
+| Component | File | Description |
+|---|---|---|
+| Query cache | `cache/query_cache.py` | LRU 50 entries, 1h TTL. Streams cached responses in 40-char chunks. Invalidated on every re-ingest or reindex. Skipped for `doc_id`-filtered queries. |
+| Embedding cache | `cache/embedding_cache.py` | LRU 200 entries, no TTL. Stores query-text → vector mapping. Saves ~50ms per repeated query. |
+| Model pre-warmer | `services/model_warmer.py` | Fires 1-token LLM generate + 1-text embed on startup. Eliminates 15–30s cold-start on first query. Exposes `is_ready()` for the readiness endpoint. |
+| Shared HTTP client | `services/http_client.py` | Singleton `httpx.AsyncClient` with connection pooling reused across all V2 Ollama calls. Reduces per-request TCP overhead. |
+| Batch summarization | `ingestion/summarizer.py` | `summarize_batch()` groups 3 pages into one Ollama call, split on `---PAGE_BREAK---`. ~3× faster ingestion vs. per-page calls. Orchestrator updated to use batches. |
+| Per-step timing | `routers/rag_v2.py` | Tracks `embedding_ms`, `search_ms`, `fetch_ms`, `assembly_ms`, `llm_first_token_ms`, `llm_total_ms`. Included in the final SSE done event. |
+| `/api/v2/ready` | `routers/health_v2.py` | Returns `{"ready": bool, "llm": bool, "embedder": bool}`. Poll after server start to know when queries will be fast. |
+| Cache stats on health | `routers/health_v2.py` | `GET /api/v2/health` now includes `cache_stats: {size, hits, misses, hit_rate}`. |
+
+### Key design decisions
+
+**Batch summarization parses on `---PAGE_BREAK---`:** The LLM is instructed to separate summaries with this sentinel. If the parse produces fewer parts than pages (malformed output), remaining pages fall back to `[Summarization failed]` — no silent data loss.
+
+**Cache bypass for `doc_id` queries:** "Ask about this document" queries are too specific to share across users. Cached results would return wrong answers if the same general query was later run without a filter.
+
+**Timing in SSE final event:** The frontend can display timing in a collapsible debug panel without needing a separate metrics endpoint. `cache_hit: true` in timing lets the frontend distinguish cache hits from full pipeline runs.
+
+**Model warmer uses the shared HTTP client:** The same pooled connection is used for warm-up and for all subsequent summarization calls, so the warm-up also primes the connection pool.
+
+---
+
+## V2 Session 5 — Frontend + Web Search + Polish
+
+**Completed: 2026-04-03**
+
+### What was built
+
+| Component | File | Description |
+|---|---|---|
+| `GET /api/v2/documents` | `routers/ingest_v2.py` | Returns all `status='ready'` documents from SQLite. Used to populate the Chat doc-selector dropdown. |
+| V2 Chat (SSE) | `frontend/src/pages/Chat.jsx` | Full rewrite to `POST /api/v2/query`. Parses `data: {…}\n\n` SSE events. Replaces NDJSON V1 stream. |
+| RAG / Web toggle | `Chat.jsx` | Segmented button: "Search documents" (`rag_enabled: true`) vs "Search web" (`rag_enabled: false`). |
+| Document selector | `Chat.jsx` | Dropdown populated from `GET /api/v2/documents`. Passes `doc_id` to filter Qdrant search to one document. |
+| Timing debug panel | `Chat.jsx` | `⚡ Debug` button shows `embedding_ms`, `search_ms`, `fetch_ms`, `assembly_ms`, `llm_first_token_ms`, `llm_total_ms` — or "Cache hit" badge — under each assistant message. |
+| V2 error display | `Chat.jsx` | SSE done events with `error` field render the message red — distinguishable from a normal answer. "No docs" and "Models loading" banners on load. |
+| V2 source citations | `Chat.jsx` | Inline `V2Citations` component handles both RAG (`{doc_id, filename, page_num, score}`) and web (`{title, url}`) source shapes. |
+| Language forwarding | `Chat.jsx` | `i18n.language` → `"en"` or `"nl"` sent in query body so the LLM responds in the UI's active language. |
+| V2 ingest section | `frontend/src/pages/DocumentIngestion.jsx` | Additive section: single-file PDF/PPTX uploader → `POST /api/v2/ingest` → 2s poll → phase labels (Extracting / Summarizing N/total / Embedding / Ready ✓). Lists all V2-indexed docs below. |
+| V2 stats panel | `frontend/src/pages/Dashboard.jsx` | Additive row: Qdrant vector count, cache hit rate, LLM ready, embedder ready — from `GET /api/v2/health` and `GET /api/v2/ready`. |
+| V2 i18n keys | `en.json` + `nl.json` | `v2.chat.*`, `v2.ingest.*`, `v2.dashboard.*` keys added to both locale files. |
+
+### Key design decisions
+
+**SSE parsed via `fetch + ReadableStream`, not `EventSource`:** The V2 query endpoint requires a POST body (`{query, language, rag_enabled, doc_id}`). `EventSource` only supports GET with no body. `fetch` with a manual SSE parser gives identical streaming behaviour and works with POST.
+
+**SSE buffer split on `\n\n`:** Each SSE event is terminated by a double newline. The parser splits the accumulated buffer on `\n\n`, processes complete events, and keeps any incomplete trailing event in the buffer for the next `reader.read()` iteration.
+
+**Error events reuse the done shape:** The backend sends `{"token":"","done":true,"error":"…","sources":[]}` for error conditions. The frontend detects `msg.error` in the done handler and sets `isError: true` on the message, triggering red styling. This avoids a separate error channel.
+
+**V2 ingest section is additive:** The existing V1 uploader (PDF/DOCX/XLSX/TXT/PPTX → ChromaDB) stays intact. The V2 section (PDF/PPTX → SQLite + Qdrant) is placed above it under a clearly labeled "V2 Smart Index" header. Users can use both pipelines independently.
+
+**Doc selector only appears when docs exist:** The document dropdown in Chat only renders when `GET /api/v2/documents` returns ≥1 document. An empty V2 index shows a soft warning banner instead of an empty dropdown.
+
+**Cache hit badge vs timing table:** When `timing.cache_hit === true`, only a yellow "Cache hit" badge is shown — there are no per-step ms values for cached responses. When it's a full pipeline run, the per-step table is shown. This distinguishes the two modes clearly in the debug panel.
 
 ---
 

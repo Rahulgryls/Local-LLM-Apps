@@ -1,10 +1,10 @@
 """
 LAKO — PowerPoint Parser
-Extracts slide text and speaker notes from .pptx files.
+Extracts slide text, tables, and speaker notes from .pptx files.
 Uses python-pptx. Each slide becomes a separate ParsedPage.
-Session 6: Fully implemented.
-Session 13: _render_slides_to_images() added — LibreOffice headless primary,
-             Pillow composition fallback. Enables vision pipeline for image-only slides.
+Session 6:  Fully implemented (text + notes).
+Session 13: _render_slides_to_images() — LibreOffice headless primary, Pillow fallback.
+Session 15: shape.has_table detection — tables emitted as markdown inline with slide text.
 """
 
 import io
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import List
 
 from pptx import Presentation
+from pptx.table import Table as PptxTable
 
 from services.parsers.pdf_parser import ParsedDocument, ParsedPage
 
@@ -24,8 +25,17 @@ class PPTParser:
     """
     Parses .pptx files using python-pptx.
     Each slide becomes a separate 'page' in ParsedDocument.
-    Extracts: slide title (prefixed with #), all text boxes, speaker notes.
-    _render_slides_to_images() renders each slide as PNG for vision pipeline.
+
+    Shape extraction order per slide:
+      1. Title (with # prefix)
+      2. All other shapes in z-order:
+         - Text frames → plain text
+         - Tables       → markdown table (| col | col |)
+         - Other shapes  → skipped
+      3. Speaker notes (prefixed [Notes: ...])
+
+    Tables are emitted inline so the chunker can keep the slide's
+    explanatory text and its table in the same chunk.
     """
 
     def parse(self, file_path: Path) -> ParsedDocument:
@@ -52,12 +62,12 @@ class PPTParser:
 
     def _slide_to_text(self, slide) -> str:
         """
-        Extract all text from a single slide.
-        Order: title (with # prefix) → remaining text boxes → speaker notes.
+        Extract all text and tables from a single slide in shape order.
+        Title → text boxes / tables → notes.
         """
-        parts = []
+        parts: List[str] = []
 
-        # Title — identified via slide.shapes.title
+        # Title
         title_shape = slide.shapes.title
         title_id = title_shape.shape_id if title_shape else None
         if title_shape and title_shape.has_text_frame:
@@ -65,11 +75,16 @@ class PPTParser:
             if title:
                 parts.append(f"# {title}")
 
-        # All other text-bearing shapes (text boxes, content placeholders)
+        # All other shapes
         for shape in slide.shapes:
             if shape.shape_id == title_id:
                 continue
-            if shape.has_text_frame:
+
+            if shape.has_table:
+                md = self._table_to_markdown(shape.table)
+                if md.strip():
+                    parts.append(md)
+            elif shape.has_text_frame:
                 text = shape.text_frame.text.strip()
                 if text:
                     parts.append(text)
@@ -84,11 +99,39 @@ class PPTParser:
 
         return "\n\n".join(parts)
 
+    def _table_to_markdown(self, table: PptxTable) -> str:
+        """
+        Convert a python-pptx Table to a markdown table string.
+        First row is treated as the header row.
+        """
+        rows: List[List[str]] = []
+        for row in table.rows:
+            cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+            rows.append(cells)
+
+        if not rows:
+            return ""
+
+        headers = rows[0]
+        col_count = len(headers)
+        separator = ["---"] * col_count
+
+        lines = ["| " + " | ".join(headers) + " |"]
+        lines.append("| " + " | ".join(separator) + " |")
+
+        for row in rows[1:]:
+            padded = (row + [""] * col_count)[:col_count]
+            lines.append("| " + " | ".join(padded) + " |")
+
+        return "\n".join(lines)
+
+    # ── Slide image rendering (Session 13 — unchanged) ────────────────────────
+
     def _render_slides_to_images(self, pptx_path: Path) -> List[bytes]:
         """
-        Render each slide of a PPTX file as PNG bytes.
-        Tries LibreOffice headless first; falls back to Pillow shape composition.
-        Returns [] gracefully if both methods fail (text-only mode continues).
+        Render each slide as PNG bytes.
+        LibreOffice headless primary; Pillow shape composition fallback.
+        Returns [] gracefully if both methods fail.
         """
         pptx_path = Path(pptx_path)
 
@@ -111,11 +154,6 @@ class PPTParser:
             return []
 
     def _render_with_libreoffice(self, pptx_path: Path, soffice: str) -> List[bytes]:
-        """
-        Use LibreOffice headless to convert each slide to a PNG.
-        Command: soffice --headless --convert-to png --outdir <tmpdir> <file>
-        LibreOffice names outputs: <stem>.png (1 slide) or <stem>0.png, <stem>1.png, ...
-        """
         with tempfile.TemporaryDirectory() as tmpdir:
             proc = subprocess.run(
                 [soffice, "--headless", "--convert-to", "png", "--outdir", tmpdir, str(pptx_path)],
@@ -126,7 +164,6 @@ class PPTParser:
             if proc.returncode != 0:
                 raise RuntimeError(f"LibreOffice exit {proc.returncode}: {proc.stderr.strip()}")
 
-            # Collect all PNGs in temp dir (all belong to this conversion)
             png_files = sorted(Path(tmpdir).glob("*.png"), key=lambda p: p.name)
             if not png_files:
                 raise RuntimeError("LibreOffice produced no PNG files")
@@ -134,20 +171,13 @@ class PPTParser:
             return [f.read_bytes() for f in png_files]
 
     def _render_with_pillow(self, pptx_path: Path) -> List[bytes]:
-        """
-        Pillow fallback: compose each slide by pasting embedded picture shapes
-        onto a white canvas sized to the presentation dimensions.
-        Text-only slides produce a white canvas (text is captured via parse() separately).
-        Image-only slides will have their pictures composited here.
-        """
         from PIL import Image as PILImage
 
         prs = Presentation(str(pptx_path))
-        slide_width = prs.slide_width   # EMU
-        slide_height = prs.slide_height  # EMU
+        slide_width  = prs.slide_width
+        slide_height = prs.slide_height
 
-        # Convert EMU → pixels at 96 DPI (914400 EMU = 1 inch)
-        px_w = max(int(slide_width / 914400 * 96), 800)
+        px_w = max(int(slide_width  / 914400 * 96), 800)
         px_h = max(int(slide_height / 914400 * 96), 600)
         scale_x = px_w / slide_width
         scale_y = px_h / slide_height
@@ -157,15 +187,14 @@ class PPTParser:
             canvas = PILImage.new("RGB", (px_w, px_h), "white")
 
             for shape in slide.shapes:
-                # shape_type 13 = MSO_SHAPE_TYPE.PICTURE
-                if shape.shape_type == 13:
+                if shape.shape_type == 13:   # MSO_SHAPE_TYPE.PICTURE
                     try:
                         pic_bytes = shape.image.blob
                         pic_img = PILImage.open(io.BytesIO(pic_bytes)).convert("RGB")
-                        left = max(int(shape.left * scale_x), 0)
-                        top = max(int(shape.top * scale_y), 0)
-                        w = max(int(shape.width * scale_x), 1)
-                        h = max(int(shape.height * scale_y), 1)
+                        left = max(int(shape.left  * scale_x), 0)
+                        top  = max(int(shape.top   * scale_y), 0)
+                        w    = max(int(shape.width  * scale_x), 1)
+                        h    = max(int(shape.height * scale_y), 1)
                         pic_img = pic_img.resize((w, h), PILImage.LANCZOS)
                         canvas.paste(pic_img, (left, top))
                     except Exception:
