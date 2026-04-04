@@ -116,9 +116,9 @@ async def ingest_document(
         await update_document_status(doc_id, "summarizing", total_pages=total_pages)
         log.info("extraction_complete", total_pages=total_pages)
 
-        # ── Pass 2: Batch LLM summarisation (5 pages per Ollama call) ────────
+        # ── Pass 2: Per-page LLM summarisation (batch=1 for reliability with small models)
         pages      = await get_pages(doc_id)   # sorted by page_num
-        BATCH_SIZE = 5
+        BATCH_SIZE = 1
         for batch_start in range(0, len(pages), BATCH_SIZE):
             batch_pages = pages[batch_start : batch_start + BATCH_SIZE]
             batch_input = [

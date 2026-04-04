@@ -29,6 +29,25 @@ _EMPTY_MARKER   = "[Empty page]"
 _FAILED_MARKER  = "[Summarization failed]"
 _MAX_CHARS      = 6_000
 _BATCH_SEP      = "---PAGE_BREAK---"
+_MAX_SUMMARY    = 1_500   # hard cap on stored/embedded summary length
+
+
+import re as _re
+
+def _clean_summary(text: str, page_num: int) -> str:
+    """
+    Strip echoed page headers/separators that small models sometimes include,
+    then hard-cap the result at _MAX_SUMMARY characters.
+    """
+    # Remove lines like "=== Page 12 ===" or "--- PAGE_BREAK ---"
+    text = _re.sub(r'={2,}.*?={2,}', '', text)
+    text = _re.sub(r'-{3,}.*?-{3,}', '', text)
+    # Remove "Page N:" or "Page N\n" prefixes
+    text = _re.sub(r'(?i)^page\s+\d+[:\s]*', '', text.strip())
+    text = text.strip()
+    if len(text) > _MAX_SUMMARY:
+        text = text[:_MAX_SUMMARY].rsplit(' ', 1)[0] + '…'
+    return text or _FAILED_MARKER
 
 
 def _build_prompt(
@@ -127,6 +146,8 @@ async def summarize_page(
             )
             break   # non-transient error — don't retry
 
+    if summary not in (_FAILED_MARKER, _EMPTY_MARKER):
+        summary = _clean_summary(summary, page_num)
     await insert_page_summary(doc_id, page_num, summary)
     return summary
 
@@ -215,7 +236,7 @@ async def summarize_batch(
 
     for i, p in enumerate(needs_llm):
         if i < len(parts) and parts[i] and parts[i] != _FAILED_MARKER:
-            summary = parts[i]
+            summary = _clean_summary(parts[i], p["page_num"])
         else:
             summary = _FAILED_MARKER
         await insert_page_summary(p["doc_id"], p["page_num"], summary)
