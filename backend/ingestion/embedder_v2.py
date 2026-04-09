@@ -16,6 +16,7 @@ Public API:
 import json
 import logging
 import uuid
+from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -29,7 +30,6 @@ from qdrant_client.http.models import (
     VectorParams,
 )
 
-from config import get_config
 from db.document_store import (
     get_all_ready_documents,
     get_document,
@@ -49,14 +49,17 @@ VECTOR_SIZE     = 768           # nomic-embed-text output dimension
 
 _qdrant: Optional[AsyncQdrantClient] = None
 
+# Local storage path — project_root/storage/qdrant (no Docker required)
+_QDRANT_PATH = Path(__file__).parent.parent.parent / "storage" / "qdrant"
+
 
 # ── Qdrant client singleton ────────────────────────────────────────────────────
 
 async def _get_qdrant() -> AsyncQdrantClient:
     global _qdrant
     if _qdrant is None:
-        url = get_config().get("qdrant_url", "http://localhost:6333")
-        _qdrant = AsyncQdrantClient(url=url)
+        _QDRANT_PATH.mkdir(parents=True, exist_ok=True)
+        _qdrant = AsyncQdrantClient(path=str(_QDRANT_PATH))
     return _qdrant
 
 

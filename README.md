@@ -1,12 +1,16 @@
 # LAKO — Local AI Knowledge Orchestrator
 
-**Version:** V1 + V2 (complete)
-**Build:** 22 sessions (V1) + V2 Session 5 complete (all 5 V2 sessions done)
+**Version:** V1 + V2 + V3 (complete)
+**Build:** 22 sessions (V1) + V2 Session 5 + V3 ingestion pipeline + query performance tuning + cross-domain retrieval fix
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** V2 Session 5 + V2 clear index + bug fixes — 2026-04-04
+**Last updated:** Cross-domain retrieval fix + Qwen3 think:false — 2026-04-09
 
 > **V2 "Smart Index, Full Context" architecture — fully built.** V1 endpoints remain fully functional. V2 has a complete parallel pipeline under `/api/v2/`: SQLite document store + Qdrant vector index, LLM page summaries as the search index, full raw-page text as reasoning context, SSE streaming with timing, query + embedding cache, model pre-warming, and SearXNG web search mode. The React frontend is fully updated for V2.
+
+> **V3 "Direct-RAG" ingestion pipeline — fully built.** V3 adds a new ingestion service under `/api/v3/` that skips LLM summarisation entirely — raw text is preserved and chunked directly. Supports PDF, DOCX, PPTX, XLSX, and HTML. Page classifier routes each page to TEXT_RICH (sentence-boundary chunking), TABLE (pdfplumber flatten), IMAGE_ONLY (vision model), or MIXED (text + per-image vision). Qdrant runs embedded (no Docker). Original files stored at `storage/documents/{doc_id}/original.{ext}`. 35 unit tests pass.
+
+> **Query speed optimisation — 2026-04-09.** Context budget corrected from 60K to 12K tokens (matching the 20K `num_ctx`), buffer pages reduced from 1 to 0, `num_predict` reduced from 1500 to 800, and Qdrant switched from Docker to embedded mode (no separate process needed).
 
 > **Core principle:** Everything runs locally. No cloud calls. No external API keys. No data leaves the bank's infrastructure — satisfying GDPR, Dutch banking secrecy law, and DNB regulatory requirements.
 
@@ -48,7 +52,8 @@ Everything runs on a server inside the bank. No question, no document, and no an
 | Primary LLM | qwen3.5:35b-a3b-coding-nvfp4 | The main language model for answering questions and vision tasks. Qwen3.5 is made by Alibaba, trained on 119 languages including Dutch, with a 256K token context window. Runs at ~112 tok/s on M5 Pro via Ollama 0.19 MLX. Handles text, code, and vision in a single model. |
 | Vision Model | qwen3.5:35b-a3b-coding-nvfp4 | Same model as primary — used for image description, PPTX slide rendering, and scanned PDF OCR. Single model for all tasks eliminates cold-start model switching. |
 | Embeddings | nomic-embed-text | Converts text into numerical vectors (lists of numbers). Two pieces of text that mean similar things will produce similar vectors. This is how ChromaDB can find relevant document chunks from a question — by comparing vector similarity. |
-| Vector DB | ChromaDB | A local database that stores document chunks as vectors. When you ask a question, LAKO converts your question to a vector and ChromaDB finds the stored chunks with the closest vectors. No Docker required — runs as a Python library. |
+| Vector DB (V1) | ChromaDB | A local database that stores document chunks as vectors. When you ask a question, LAKO converts your question to a vector and ChromaDB finds the stored chunks with the closest vectors. No Docker required — runs as a Python library. |
+| Vector DB (V2/V3) | Qdrant (embedded) | Qdrant is used by the V2 and V3 pipelines. Runs in embedded mode — no Docker, no separate process. Starts automatically with the backend. Data persists in `storage/qdrant/`. |
 | PDF Parsing | PyMuPDF (fitz) + pdfplumber | PyMuPDF extracts text blocks with bounding boxes. pdfplumber detects tables and their exact positions. Both are merged by y-coordinate so the output is a unified inline flow: prose → markdown table → prose. |
 | OCR Primary | qwen3.5 vision | Scanned PDF pages (< 50 chars extracted) are rendered as PNG and sent to the vision model with a text-extraction prompt. Significantly better Dutch-language quality than Tesseract. Session 13. |
 | OCR Fallback | Tesseract | Fallback if the vision model times out or errors. Still installed — `brew install tesseract`. |
@@ -93,6 +98,10 @@ Single-model stack eliminates cold-start swapping. Ollama auto-unloads after 5 m
 |---|---|
 | 21 | Claude-style Chat UI — conversation thread, stop button, edit message, typing dots, auto-scroll |
 | 22 | **Multi-topic intent class** — queries with multiple independent "?" now route through decompose→per-sub-query retrieval→multi-topic synthesis prompt. Cache refresh button (GET /api/cache/stats, DELETE /api/cache) with frontend badge in Chat toolbar. Table summary prompt improved to paraphrase values in plain language for better BM25 matching. Dashboard "Time Consumed" column. Skipped badge fix. |
+| V3 | **V3 Direct-RAG ingestion pipeline** — `ingestion/service.py` with PDF page classifier (TEXT_RICH / TABLE / IMAGE_ONLY / MIXED), `smart_chunk()` with sentence-boundary splitting and 50-token overlap, DOCX/PPTX/XLSX/HTML sub-pipelines, `db/chunk_store.py` (storage/lako.db), `routers/ingest_v3.py` with background tasks + status polling + file download + delete. 35 unit tests in `tests/test_ingestion.py`. |
+| Perf | **Query speed fixes** — `MAX_CONTEXT_TOKENS` corrected from 60K→12K (was sending more text than model's 20K context), `buffer_pages` reduced 1→0, `num_predict` 1500→800, Qdrant switched from Docker to embedded mode (auto-starts with backend, data persists in `storage/qdrant/`). |
+| Fix | **Disable Qwen3 thinking mode via `think: false`** — Qwen3's chain-of-thought reasoning was leaking into user-visible output and adding full CoT decode time even when suppressed. Root fix: pass `"think": false` at the top level of every Ollama API call (`stream_chat`, `chat`, `describe_image`, model warm-up, summarizer). `get_ollama_runtime_options()` now returns `{"options": {...}, "keep_alive": ..., "think": ...}` matching Ollama's API structure. Configured via `ollama_runtime.think` in `config.json`. |
+| Fix | **Cross-domain retrieval fix** — Small or minority-domain documents (e.g. a 7-page WHO medical report alongside 182-page IMF economic reports) were returning only 1 page in context (page 2 / infodemic) while the actual risk assessment page (page 1) was excluded. Root cause chain: (1) `score_threshold` applied at Qdrant level silently dropped cross-domain pages before MMR ran; (2) only 1 slot was guaranteed per document, always going to the highest-scoring page, missing secondary pages with the actual answer. Fix: threshold removed from Qdrant fetch (fetches `top_k × 5 = 40` candidates no-threshold); MMR Pass 1 now guarantees `max(1, top_k ÷ num_docs)` slots per document threshold-free (= 2 slots per doc with 3 docs + top_k=8), Pass 2 fills remaining slots enforcing threshold. Known remaining limitation: the summarizer front-loads case statistics over the risk-level box on page 1, causing page 2 to always rank first semantically. Long-term fix: hybrid BM25 + vector search so keyword "Risk Assessment" directly matches the page 1 header. |
 
 ---
 
@@ -579,24 +588,13 @@ ollama pull nomic-embed-text               # Embeddings — ~0.5 GB download
 ### Start backend
 
 ```bash
-cd ~/lako/backend
-source .venv/bin/activate
-uvicorn main:app --reload --port 8000
-```
-
-Or use the convenience script:
-```bash
 ./start_backend.sh
 ```
 
+Qdrant starts automatically embedded inside the backend — no Docker needed.
+
 ### Start frontend
 
-```bash
-cd ~/lako/frontend
-npm run dev
-```
-
-Or use the convenience script:
 ```bash
 ./start_frontend.sh
 ```
@@ -604,8 +602,11 @@ Or use the convenience script:
 ### Open the app
 
 ```
-http://localhost:5173
+http://localhost:5173        ← Frontend
+http://localhost:8000/docs  ← API docs (Swagger)
 ```
+
+> **Note:** Ollama must be running before starting the backend. Start the Ollama app first, or run `ollama serve`.
 
 ---
 

@@ -8,9 +8,18 @@
   "confluence_url": "https://yourbank.atlassian.net",
   "confluence_email": "",
   "confluence_token": "",
-  "top_k": 3,
+  "top_k": 8,
   "similarity_threshold": 0.25,
   "api_key": "",
   "api_keys_path": "/Users/rahul/lako/storage/api_keys.json",
-  "gateway_enabled": true
+  "gateway_enabled": true,
+  "ollama_runtime": {
+    "num_ctx": 20480,
+    "num_predict": 3000,
+    "repeat_penalty": 1.1,
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "keep_alive": -1,
+    "think": false
+  }
 }

@@ -20,7 +20,7 @@ from typing import Optional
 import httpx
 import structlog
 
-from config import get_config
+from config import get_config, get_ollama_runtime_options
 from db.document_store import insert_page_summary
 
 logger = structlog.get_logger(__name__)
@@ -79,14 +79,14 @@ async def _call_ollama(prompt: str) -> str:
     # Use summarization_model if configured — a small/fast model is ideal here.
     # Falls back to primary_model if the field is empty.
     model = config.get("summarization_model") or config["primary_model"]
+    rt = get_ollama_runtime_options()
     body = {
-        "model":   model,
-        "prompt":  prompt,
-        "stream":  False,
-        "options": {
-            "temperature": 0.1,
-            "num_ctx":     8192,
-        },
+        "model":      model,
+        "prompt":     prompt,
+        "stream":     False,
+        "options":    rt["options"],
+        "keep_alive": rt["keep_alive"],
+        "think":      rt["think"],
     }
     client = get_ollama_http_client()
     r = await client.post(f"{config['ollama_url']}/api/generate", json=body)

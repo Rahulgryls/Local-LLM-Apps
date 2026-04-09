@@ -27,7 +27,7 @@ _DEFAULT_CONFIG = {
     "top_k": 5,
     "similarity_threshold": 0.7,
     "api_key": "",
-    "qdrant_url":  "http://localhost:6333",
+    # qdrant_url removed — Qdrant now runs embedded (no Docker). Data lives in storage/qdrant/
     "searxng_url": "http://localhost:8080",
 }
 
@@ -50,6 +50,46 @@ def reload_config() -> dict:
     """Force reload config from disk (clears lru_cache)."""
     get_config.cache_clear()
     return get_config()
+
+
+_DEFAULT_OLLAMA_RUNTIME: dict = {
+    "num_ctx":        20480,
+    "num_predict":    1500,
+    "repeat_penalty": 1.1,
+    "temperature":    0.3,
+    "top_p":          0.9,
+    "keep_alive":     -1,
+    "think":          False,
+}
+
+# Keys that belong inside Ollama's "options" object vs. at the request root
+_OPTIONS_KEYS   = {"num_ctx", "num_predict", "repeat_penalty", "temperature", "top_p"}
+_TOPLEVEL_KEYS  = {"keep_alive", "think"}
+
+
+def get_ollama_runtime_options() -> dict:
+    """
+    Return Ollama runtime settings merged from config.json's ``ollama_runtime``
+    key, falling back to hardcoded defaults for any missing keys.
+
+    Return shape::
+
+        {
+            "options":    {num_ctx, num_predict, repeat_penalty, temperature, top_p},
+            "keep_alive": -1,
+            "think":      False,
+        }
+
+    ``options`` maps directly to Ollama's ``options`` field.
+    ``keep_alive`` and ``think`` are top-level Ollama API fields.
+    """
+    overrides = get_config().get("ollama_runtime", {})
+    merged    = {**_DEFAULT_OLLAMA_RUNTIME, **overrides}
+    return {
+        "options":    {k: merged[k] for k in _OPTIONS_KEYS if k in merged},
+        "keep_alive": merged.get("keep_alive", -1),
+        "think":      merged.get("think", False),
+    }
 
 
 def save_config(data: dict) -> dict:

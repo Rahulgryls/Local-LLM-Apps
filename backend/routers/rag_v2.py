@@ -35,6 +35,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from cache import embedding_cache, query_cache
+from config import get_ollama_runtime_options
 from retrieval.budget_manager import apply_budget
 from retrieval.context_fetcher import fetch_context
 from retrieval.models import QueryRequest
@@ -77,6 +78,15 @@ async def _stream_rag(request: QueryRequest):
     """Async generator: full RAG pipeline → SSE token stream, with timing and cache."""
     from services.ollama_client import ollama_client
 
+    _rt = get_ollama_runtime_options()
+    logger.info(
+        "rag_query_runtime",
+        num_ctx=_rt["options"]["num_ctx"],
+        keep_alive=_rt["keep_alive"],
+        think=_rt["think"],
+        query=request.query[:80],
+    )
+
     timing: dict = {}
 
     # ── Cache check (skip for doc_id-filtered queries) ─────────────────────────
@@ -108,10 +118,12 @@ async def _stream_rag(request: QueryRequest):
     t1 = time.perf_counter()
     try:
         from config import get_config
-        score_threshold = get_config().get("similarity_threshold", 0.3)
+        cfg             = get_config()
+        score_threshold = cfg.get("similarity_threshold", 0.25)
+        top_k           = cfg.get("top_k", 8)
         search_results = await search_pages(
             query              = request.query,
-            top_k              = 5,
+            top_k              = top_k,
             score_threshold    = score_threshold,
             doc_id_filter      = request.doc_id,
             query_vector       = vector,
@@ -136,7 +148,7 @@ async def _stream_rag(request: QueryRequest):
 
     # ── Context fetch + budget trimming ───────────────────────────────────────
     t2 = time.perf_counter()
-    assembled = await fetch_context(search_results, buffer_pages=1)
+    assembled = await fetch_context(search_results, buffer_pages=0)
     timing["fetch_ms"] = round((time.perf_counter() - t2) * 1000)
 
     # ── Prompt assembly ────────────────────────────────────────────────────────
@@ -191,6 +203,15 @@ async def _stream_rag(request: QueryRequest):
 async def _stream_web(request: QueryRequest):
     """Async generator: SearXNG → LLM summarise → SSE token stream."""
     from services.ollama_client import ollama_client
+
+    _rt = get_ollama_runtime_options()
+    logger.info(
+        "web_query_runtime",
+        num_ctx=_rt["options"]["num_ctx"],
+        keep_alive=_rt["keep_alive"],
+        think=_rt["think"],
+        query=request.query[:80],
+    )
 
     web_results = await web_search(request.query, num_results=5)
 

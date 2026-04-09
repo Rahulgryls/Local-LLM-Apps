@@ -47,10 +47,12 @@ async def warm_models(
         r = await client.post(
             f"{ollama_url}/api/generate",
             json={
-                "model":   primary_model,
-                "prompt":  "Hi",
-                "stream":  False,
-                "options": {"num_predict": 1},
+                "model":      primary_model,
+                "prompt":     "Hi",
+                "stream":     False,
+                "options":    {"num_predict": 1},
+                "keep_alive": -1,
+                "think":      False,
             },
         )
         r.raise_for_status()
@@ -69,7 +71,11 @@ async def warm_models(
     try:
         r = await client.post(
             f"{ollama_url}/api/embed",
-            json={"model": embedding_model, "input": "warmup"},
+            json={
+                "model":      embedding_model,
+                "input":      "warmup",
+                "keep_alive": -1,
+            },
         )
         r.raise_for_status()
         _ready["embedder"]        = True

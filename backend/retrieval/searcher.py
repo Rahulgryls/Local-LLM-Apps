@@ -24,34 +24,70 @@ logger = structlog.get_logger(__name__)
 
 # ── MMR diversity ──────────────────────────────────────────────────────────────
 
-def _apply_mmr_diversity(hits: list, top_k: int) -> list:
+def _apply_mmr_diversity(
+    hits: list,
+    top_k: int,
+    score_threshold: float = 0.0,
+) -> list:
     """
-    Cap any single document at 2 results when 3+ would otherwise be returned.
-    Freed slots are filled by the next-best hits from other documents.
+    Diversity pass with two goals:
+      1. Guarantee — every unique document gets max(1, top_k // num_docs)
+         slots unconditionally (threshold-free). With 3 docs + top_k=8 that
+         is 2 guaranteed slots per document, so a minority-domain document
+         (e.g. a medical report alongside economic reports) always contributes
+         multiple pages instead of just its single highest-scoring page.
+      2. Fill — remaining slots (up to top_k) go to highest-scoring hits
+         that meet score_threshold, capped at per_doc_cap per document.
+
+    The threshold is NOT applied to guaranteed slots (Pass 1), only to
+    fill slots (Pass 2).
 
     Inputs are assumed sorted by score descending (as returned by Qdrant).
     """
-    # Separate hits into "kept" (≤2 per doc) and "overflow" (>2 per doc)
-    per_doc: dict[str, int] = {}
-    kept:     list = []
-    overflow: list = []
+    if not hits:
+        return []
+
+    # Count unique docs to compute per-doc cap for fill slots
+    seen_ids: set[str] = set()
+    for hit in hits:
+        seen_ids.add(hit.payload.get("doc_id", ""))
+    num_unique = len(seen_ids)
+    per_doc_cap = max(2, top_k // max(num_unique, 1))
+
+    # ── Pass 1: guarantee N slots per document (threshold-free) ──────────────
+    # When multiple documents are indexed, guarantee max(1, top_k // num_docs)
+    # slots per doc so minority-domain documents always contribute multiple
+    # pages. Both slots bypass score_threshold — the doc earned them by being
+    # indexed, not by beating cross-domain semantic similarity.
+    guarantee_per_doc = max(1, top_k // max(num_unique, 1))
+
+    guaranteed: list = []
+    per_doc_guaranteed: dict[str, int] = {}
+    remainder: list = []
 
     for hit in hits:
         doc_id = hit.payload.get("doc_id", "")
-        count  = per_doc.get(doc_id, 0)
-        if count < 2:
-            kept.append(hit)
-            per_doc[doc_id] = count + 1
+        count  = per_doc_guaranteed.get(doc_id, 0)
+        if count < guarantee_per_doc and len(guaranteed) < top_k:
+            guaranteed.append(hit)
+            per_doc_guaranteed[doc_id] = count + 1
         else:
-            overflow.append(hit)
+            remainder.append(hit)
 
-    # Fill up to top_k using overflow (already scored lower, sorted descending)
-    result = kept[:top_k]
-    if len(result) < top_k:
-        needed = top_k - len(result)
-        result.extend(overflow[:needed])
+    # ── Pass 2: fill remaining slots — threshold enforced here ─────────────────
+    per_doc_count: dict[str, int] = dict(per_doc_guaranteed)
+    result = list(guaranteed)
 
-    # Re-sort by score descending (kept was already ordered, overflow may not be)
+    for hit in remainder:
+        if len(result) >= top_k:
+            break
+        if hit.score < score_threshold:
+            continue   # threshold only blocks fill slots, not guaranteed slots
+        doc_id = hit.payload.get("doc_id", "")
+        if per_doc_count.get(doc_id, 0) < per_doc_cap:
+            result.append(hit)
+            per_doc_count[doc_id] = per_doc_count.get(doc_id, 0) + 1
+
     result.sort(key=lambda h: h.score, reverse=True)
     return result[:top_k]
 
@@ -100,13 +136,16 @@ async def search_pages(
         )
     query_filter = Filter(must=conditions) if conditions else None
 
-    # ── Search — over-fetch so MMR has candidates to work with ─────────────────
+    # ── Search — fetch WITHOUT score_threshold so no document is pre-excluded ───
+    # The threshold is enforced inside MMR: guaranteed slots (1 per doc) bypass
+    # it; fill slots must clear it. This prevents cross-domain documents from
+    # being silently dropped before the diversity pass runs.
     client   = await _get_qdrant()
     response = await client.query_points(
         collection_name = COLLECTION_NAME,
         query           = vector,
-        limit           = top_k * 3,
-        score_threshold = score_threshold,
+        limit           = top_k * 5,
+        # No score_threshold here — applied selectively inside _apply_mmr_diversity
         query_filter    = query_filter,
         with_payload    = True,
     )
@@ -116,8 +155,8 @@ async def search_pages(
         logger.info("search_no_results", query=query[:80], threshold=score_threshold)
         return []
 
-    # ── MMR diversity pass ─────────────────────────────────────────────────────
-    diverse_hits = _apply_mmr_diversity(hits, top_k)
+    # ── MMR diversity pass (threshold enforced for fill slots only) ────────────
+    diverse_hits = _apply_mmr_diversity(hits, top_k, score_threshold=score_threshold)
 
     results = []
     for hit in diverse_hits:

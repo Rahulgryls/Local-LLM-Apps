@@ -9,7 +9,7 @@ import json
 
 import httpx
 from typing import AsyncGenerator, List, Optional
-from config import get_config
+from config import get_config, get_ollama_runtime_options
 
 
 class OllamaClient:
@@ -71,7 +71,15 @@ class OllamaClient:
         Stops when Ollama sends {"done": true}.
         """
         effective_model = model or self._primary_model()
-        body: dict = {"model": effective_model, "prompt": prompt, "stream": True}
+        rt = get_ollama_runtime_options()
+        body: dict = {
+            "model":      effective_model,
+            "prompt":     prompt,
+            "stream":     True,
+            "options":    rt["options"],
+            "keep_alive": rt["keep_alive"],
+            "think":      rt["think"],
+        }
         if system:
             body["system"] = system
 
@@ -85,6 +93,7 @@ class OllamaClient:
                         continue
                     try:
                         chunk = json.loads(line)
+                        # Yield response tokens (normal output)
                         token = chunk.get("response", "")
                         if token:
                             yield token
@@ -104,7 +113,15 @@ class OllamaClient:
         Returns full response as a single string.
         """
         effective_model = model or self._primary_model()
-        body: dict = {"model": effective_model, "prompt": prompt, "stream": False}
+        rt = get_ollama_runtime_options()
+        body: dict = {
+            "model":      effective_model,
+            "prompt":     prompt,
+            "stream":     False,
+            "options":    rt["options"],
+            "keep_alive": rt["keep_alive"],
+            "think":      rt["think"],
+        }
         if system:
             body["system"] = system
 
@@ -125,7 +142,11 @@ class OllamaClient:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 f"{self._base_url()}/api/embed",
-                json={"model": self._embedding_model(), "input": text},
+                json={
+                    "model":      self._embedding_model(),
+                    "input":      text,
+                    "keep_alive": -1,
+                },
             )
             r.raise_for_status()
             data = r.json()
@@ -143,7 +164,11 @@ class OllamaClient:
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(
                 f"{self._base_url()}/api/embed",
-                json={"model": self._embedding_model(), "input": texts},
+                json={
+                    "model":      self._embedding_model(),
+                    "input":      texts,
+                    "keep_alive": -1,
+                },
             )
             r.raise_for_status()
             data = r.json()
@@ -159,14 +184,18 @@ class OllamaClient:
         Uses vision_model from config (currently qwen3.5:35b-a3b-coding-nvfp4).
         stream=False — returns full response as a single string.
         """
+        rt = get_ollama_runtime_options()
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(
                 f"{self._base_url()}/api/generate",
                 json={
-                    "model": self._vision_model(),
-                    "prompt": prompt,
-                    "images": [image_base64],
-                    "stream": False,
+                    "model":      self._vision_model(),
+                    "prompt":     prompt,
+                    "images":     [image_base64],
+                    "stream":     False,
+                    "options":    {**rt["options"], "num_predict": 800},
+                    "keep_alive": rt["keep_alive"],
+                    "think":      rt["think"],
                 },
             )
             r.raise_for_status()

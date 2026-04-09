@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from config import get_config
 from routers import chat, rag, ingest, confluence, models, vector, gateway, admin, dashboard
 from routers import ingest_v2, health_v2, rag_v2
+from routers import ingest_v3
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ app.include_router(dashboard.router,  prefix="/api", tags=["Dashboard"])
 app.include_router(ingest_v2.router,  prefix="/api", tags=["V2 Ingestion"])
 app.include_router(health_v2.router,  prefix="/api", tags=["V2 Health"])
 app.include_router(rag_v2.router,     prefix="/api", tags=["V2 RAG"])
+app.include_router(ingest_v3.router,  prefix="/api", tags=["V3 Ingestion"])
 
 
 @app.get("/", tags=["Health"])
