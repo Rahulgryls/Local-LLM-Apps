@@ -163,13 +163,13 @@
       "allDocs":       "All documents",
       "debugPanel":    "Debug",
       "cacheHit":      "Cache hit",
-      "noDocsWarning": "No documents in V2 index yet. Upload a PDF or PPTX via the V2 uploader.",
+      "noDocsWarning": "No documents in V2 index yet. Upload a PDF, PPTX, or DOCX via the V2 uploader.",
       "modelsLoading": "Models loading, please wait…"
     },
     "ingest": {
       "title":            "V2 Smart Index",
       "subtitle":         "Full-page extraction → LLM summarization → Qdrant embedding",
-      "supported":        "Accepted: PDF, PPTX (one file at a time)",
+      "supported":        "Accepted: PDF, PPTX, DOCX (one file at a time)",
       "phaseExtracting":  "Extracting pages…",
       "phaseSummarizing": "Summarizing ({{current}}/{{total}})…",
       "phaseEmbedding":   "Embedding…",

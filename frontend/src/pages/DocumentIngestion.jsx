@@ -1,7 +1,7 @@
 /**
  * LAKO — Document Ingestion Page
  * V1: POST /api/ingest/docs — PDF, TXT, XLSX, DOCX, PPTX (chunked, ChromaDB).
- * V2: POST /api/v2/ingest  — PDF, PPTX only (full-page → LLM summary → Qdrant).
+ * V2: POST /api/v2/ingest  — PDF, PPTX, DOCX (full-page → LLM summary → Qdrant).
  * Session 5: Fully wired (V1).
  * Session 12: Full i18n (EN + NL).
  * Session 15 (V2 Session 5): Added V2 Smart Index section below V1 uploader.
@@ -13,7 +13,7 @@ import { Upload, FileText, CheckCircle, XCircle, Eye, Brain, ChevronRight } from
 import ProgressBar from '../components/ProgressBar'
 
 const ACCEPTED_TYPES    = '.pdf,.txt,.xlsx,.docx,.pptx'
-const V2_ACCEPTED_TYPES = '.pdf,.pptx'
+const V2_ACCEPTED_TYPES = '.pdf,.pptx,.docx'
 
 // ── V2 phase label helper ─────────────────────────────────────────────────────
 function v2PhaseLabel(phase, pagesProcessed, totalPages, t) {

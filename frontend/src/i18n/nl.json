@@ -163,13 +163,13 @@
       "allDocs":       "Alle documenten",
       "debugPanel":    "Debug",
       "cacheHit":      "Cache-treffer",
-      "noDocsWarning": "Nog geen documenten in V2-index. Upload een PDF of PPTX via de V2-uploader.",
+      "noDocsWarning": "Nog geen documenten in V2-index. Upload een PDF, PPTX of DOCX via de V2-uploader.",
       "modelsLoading": "Modellen worden geladen, even geduld…"
     },
     "ingest": {
       "title":            "V2 Smart Index",
       "subtitle":         "Pagina-extractie → LLM-samenvatting → Qdrant-inbedding",
-      "supported":        "Geaccepteerd: PDF, PPTX (één bestand tegelijk)",
+      "supported":        "Geaccepteerd: PDF, PPTX, DOCX (één bestand tegelijk)",
       "phaseExtracting":  "Pagina's extraheren…",
       "phaseSummarizing": "Samenvatten ({{current}}/{{total}})…",
       "phaseEmbedding":   "Inbedden…",
