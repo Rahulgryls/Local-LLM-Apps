@@ -1,14 +1,16 @@
 # LAKO — Local AI Knowledge Orchestrator
 
 **Version:** V1 + V2 + V3 (complete)
-**Build:** 22 sessions (V1) + V2 Session 5 + V3 ingestion pipeline + query performance tuning + cross-domain retrieval fix + DOCX V2 support
+**Build:** 22 sessions (V1) + V2 Session 5 + V3 ingestion pipeline + query performance tuning + cross-domain retrieval fix + DOCX V2 support + Confluence table chunking overhaul
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** DOCX V2 ingestion + cross-domain retrieval fix — 2026-04-09
+**Last updated:** Confluence enterprise-grade table chunking — 2026-04-10
 
 > **V2 "Smart Index, Full Context" architecture — fully built.** V1 endpoints remain fully functional. V2 has a complete parallel pipeline under `/api/v2/`: SQLite document store + Qdrant vector index, LLM page summaries as the search index, full raw-page text as reasoning context, SSE streaming with timing, query + embedding cache, model pre-warming, and SearXNG web search mode. The React frontend is fully updated for V2.
 
 > **V3 "Direct-RAG" ingestion pipeline — fully built.** V3 adds a new ingestion service under `/api/v3/` that skips LLM summarisation entirely — raw text is preserved and chunked directly. Supports PDF, DOCX, PPTX, XLSX, and HTML. Page classifier routes each page to TEXT_RICH (sentence-boundary chunking), TABLE (pdfplumber flatten), IMAGE_ONLY (vision model), or MIXED (text + per-image vision). Qdrant runs embedded (no Docker). Original files stored at `storage/documents/{doc_id}/original.{ext}`. 35 unit tests pass.
+
+> **Confluence table chunking overhaul — 2026-04-10.** `parse_page_content` now uses enterprise-grade table handling: `_materialize_table` builds a full 2D grid resolving colspan/rowspan, multi-row headers merged as `"Parent / Child"`. Each table produces a `table_summary` chunk (row count + column names) and row-level `table_row` chunks formatted as `"Header: Value\nHeader: Value"` key-value pairs. Rows merged up to TOKEN_LIMIT. Section heading prepended to every chunk. Inspired by DocLLM (JP Morgan) and Glean-style structured retrieval. No LLM call — zero ingestion overhead.
 
 > **Query speed optimisation — 2026-04-09.** Context budget corrected from 60K to 12K tokens (matching the 20K `num_ctx`), buffer pages reduced from 1 to 0, `num_predict` reduced from 1500 to 800, and Qdrant switched from Docker to embedded mode (no separate process needed).
 
@@ -269,6 +271,10 @@ lako/
 │       │                             REST API (v2 Cloud + v1 Server/DC fallback). Parses HTML
 │       │                             into ~500-token chunks via BeautifulSoup. Mock mode.
 │       │                             LIVE (Session 9).
+│       │                             _materialize_table(): builds 2D grid, resolves colspan/
+│       │                             rowspan, merges multi-row headers. parse_page_content()
+│       │                             emits table_summary + table_row (key:value) chunks per
+│       │                             table instead of one flat blob. (Session 17).
 │       │
 │       └── parsers/                ← One file per document format.
 │           ├── pdf_parser.py       ← PyMuPDF text extraction + image extraction per page.
@@ -998,6 +1004,40 @@ Vision OCR text uses different vocabulary than user queries. When a scanned page
 ### Multi-doc queries are not cached
 
 Comparison queries are inherently dynamic — the sub-queries, retrieved chunks, and assembled context depend on current DB state and the LLM's decomposition. Caching them would return stale results after new documents are ingested. Single-doc queries continue to use the TTLCache as before.
+
+---
+
+## Session 17 — Technical Decisions Made
+
+### Confluence table chunking: why key:value over pipe-separated rows
+
+The old approach joined all cells as `"Role | High | Contract review"` and stored the whole table as one vector. Two problems: (1) a query like `"junior legal AI exposure"` scores poorly against a blob — the embedding averages all rows, diluting the signal of any individual row. (2) Large tables produce one oversized chunk → single weak vector representing many concepts.
+
+The new approach formats each row as:
+```
+Role: Junior Legal
+AI Exposure / Level: High
+Reason: Contract review automation
+```
+Key:value pairs read like natural language sentences. `nomic-embed-text` encodes them into dense, query-aligned vectors. Cosine similarity against `"junior legal AI exposure"` now hits the correct row directly.
+
+### _materialize_table: 2D grid for colspan/rowspan
+
+Confluence wiki pages routinely use complex table structures — multi-level headers (`colspan` for category + `rowspan` for shared labels), frozen row headers with `rowspan` across all data rows, and stacked `<th>` rows. A naive `find_all("tr")` approach produces misaligned cells.
+
+`_materialize_table` builds a sparse dict `{(row, col): text}` and advances `col_idx` past any position already claimed by a previous rowspan. Each cell fills all `(row + dr, col + dc)` positions it spans. Multi-row headers deduplicate rowspan repeats and join with `" / "` (e.g. `"AI Exposure / Level"`). Result: column alignment is always correct, headers are always semantically complete.
+
+### table_summary chunk: anchors schema-level queries
+
+A separate `table_summary` chunk (`"Table with 3 rows. Columns: Role, Level, Score."`) is emitted before the row chunks. This anchors queries like *"what columns does the AI impact table have?"* or *"how many roles are in the displacement risk table?"* — queries that are about the table structure, not a specific row. Without the summary chunk, these queries would have no retrieval target.
+
+### Row merging up to TOKEN_LIMIT
+
+Some tables have very short rows (2–3 words per cell). Storing each as a separate chunk creates hundreds of micro-vectors that score poorly due to sparse context. Rows are accumulated and merged with `"\n\n"` until `TOKEN_LIMIT` (500 tokens) would be exceeded, then a new chunk starts. Tall tables with long cell content produce one row per chunk naturally. Short-row tables pack multiple rows per chunk. Both get good embedding density.
+
+### Qdrant: no schema change needed
+
+`block_type` in the Qdrant payload previously accepted `"table"`. It now receives `"table_summary"` or `"table_row"`. No migration required — Qdrant payloads are schemaless. Re-ingestion after clearing old Confluence vectors picks up the new chunk types automatically.
 
 ---
 
