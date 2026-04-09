@@ -1,10 +1,10 @@
 # LAKO — Local AI Knowledge Orchestrator
 
 **Version:** V1 + V2 + V3 (complete)
-**Build:** 22 sessions (V1) + V2 Session 5 + V3 ingestion pipeline + query performance tuning + cross-domain retrieval fix
+**Build:** 22 sessions (V1) + V2 Session 5 + V3 ingestion pipeline + query performance tuning + cross-domain retrieval fix + DOCX V2 support
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Cross-domain retrieval fix + Qwen3 think:false — 2026-04-09
+**Last updated:** DOCX V2 ingestion + cross-domain retrieval fix — 2026-04-09
 
 > **V2 "Smart Index, Full Context" architecture — fully built.** V1 endpoints remain fully functional. V2 has a complete parallel pipeline under `/api/v2/`: SQLite document store + Qdrant vector index, LLM page summaries as the search index, full raw-page text as reasoning context, SSE streaming with timing, query + embedding cache, model pre-warming, and SearXNG web search mode. The React frontend is fully updated for V2.
 
@@ -101,6 +101,7 @@ Single-model stack eliminates cold-start swapping. Ollama auto-unloads after 5 m
 | V3 | **V3 Direct-RAG ingestion pipeline** — `ingestion/service.py` with PDF page classifier (TEXT_RICH / TABLE / IMAGE_ONLY / MIXED), `smart_chunk()` with sentence-boundary splitting and 50-token overlap, DOCX/PPTX/XLSX/HTML sub-pipelines, `db/chunk_store.py` (storage/lako.db), `routers/ingest_v3.py` with background tasks + status polling + file download + delete. 35 unit tests in `tests/test_ingestion.py`. |
 | Perf | **Query speed fixes** — `MAX_CONTEXT_TOKENS` corrected from 60K→12K (was sending more text than model's 20K context), `buffer_pages` reduced 1→0, `num_predict` 1500→800, Qdrant switched from Docker to embedded mode (auto-starts with backend, data persists in `storage/qdrant/`). |
 | Fix | **Disable Qwen3 thinking mode via `think: false`** — Qwen3's chain-of-thought reasoning was leaking into user-visible output and adding full CoT decode time even when suppressed. Root fix: pass `"think": false` at the top level of every Ollama API call (`stream_chat`, `chat`, `describe_image`, model warm-up, summarizer). `get_ollama_runtime_options()` now returns `{"options": {...}, "keep_alive": ..., "think": ...}` matching Ollama's API structure. Configured via `ollama_runtime.think` in `config.json`. |
+| Feature | **DOCX V2 ingestion** — Word documents (.docx) now supported in the V2 smart-index pipeline with full feature parity to PDF ingestion. New `docx_extractor.py` splits content into virtual pages at heading boundaries (H1–H4); sections > 5000 chars are further split at paragraph boundaries. Tables are flattened inline (col: value \| col: value format). Embedded images are described via the vision model (same as scanned-page OCR in PDFs). All three V2 passes run on DOCX: heading-based virtual pages → LLM page summaries → Qdrant embeddings. Router (`ingest_v2.py`) and orchestrator now accept `.docx` alongside `.pdf` and `.pptx`. |
 | Fix | **Cross-domain retrieval fix** — Small or minority-domain documents (e.g. a 7-page WHO medical report alongside 182-page IMF economic reports) were returning only 1 page in context (page 2 / infodemic) while the actual risk assessment page (page 1) was excluded. Root cause chain: (1) `score_threshold` applied at Qdrant level silently dropped cross-domain pages before MMR ran; (2) only 1 slot was guaranteed per document, always going to the highest-scoring page, missing secondary pages with the actual answer. Fix: threshold removed from Qdrant fetch (fetches `top_k × 5 = 40` candidates no-threshold); MMR Pass 1 now guarantees `max(1, top_k ÷ num_docs)` slots per document threshold-free (= 2 slots per doc with 3 docs + top_k=8), Pass 2 fills remaining slots enforcing threshold. Known remaining limitation: the summarizer front-loads case statistics over the risk-level box on page 1, causing page 2 to always rank first semantically. Long-term fix: hybrid BM25 + vector search so keyword "Risk Assessment" directly matches the page 1 header. |
 
 ---

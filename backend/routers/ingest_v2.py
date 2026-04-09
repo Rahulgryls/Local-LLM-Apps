@@ -37,7 +37,7 @@ _jobs: dict[str, dict] = {}
 _UPLOAD_DIR = Path(__file__).parent.parent.parent / "storage" / "uploads"
 
 # Accepted file extensions → source_type
-_SUPPORTED_EXT = {".pdf", ".pptx"}
+_SUPPORTED_EXT = {".pdf", ".pptx", ".docx"}
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
@@ -159,14 +159,14 @@ async def ingest_file(
     file: UploadFile = File(...),
 ) -> IngestResponse:
     """
-    Accept a PDF or PPTX upload and start the V2 structure-extraction pipeline.
+    Accept a PDF, PPTX, or DOCX upload and start the V2 structure-extraction pipeline.
 
     Returns a **job_id** that can be polled at
     `GET /api/v2/ingest/{job_id}/status`.
     """
     await init_db()
 
-    suffix = Path(file.filename).suffix.lower()
+    suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _SUPPORTED_EXT:
         raise HTTPException(
             status_code=415,

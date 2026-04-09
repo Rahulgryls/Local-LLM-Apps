@@ -30,6 +30,7 @@ from db.document_store import (
     init_db,
     update_document_status,
 )
+from ingestion.docx_extractor import extract_docx
 from ingestion.embedder_v2 import _embed_all_summaries_for_doc, ensure_collection
 from ingestion.pdf_extractor import extract_pdf
 from ingestion.pptx_extractor import extract_pptx
@@ -40,6 +41,7 @@ logger = structlog.get_logger(__name__)
 _EXT_TO_SOURCE_TYPE: dict[str, str] = {
     ".pdf":  "pdf",
     ".pptx": "pptx",
+    ".docx": "docx",
 }
 
 
@@ -109,6 +111,8 @@ async def ingest_document(
             total_pages = await extract_pdf(file_path, doc_id, _extract_cb)
         elif source_type == "pptx":
             total_pages = await extract_pptx(file_path, doc_id, _extract_cb)
+        elif source_type == "docx":
+            total_pages = await extract_docx(file_path, doc_id, _extract_cb)
         else:
             raise ValueError(f"Unsupported source_type: {source_type!r}")
 
