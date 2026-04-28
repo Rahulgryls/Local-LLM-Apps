@@ -38,6 +38,25 @@ const useAppStore = create((set, get) => ({
   setIngestionProgress: (progress) => set({ ingestionProgress: progress }),
   setIngestionStatus:   (status)   => set({ ingestionStatus: status }),
 
+  // ── Chat session state (persists across page navigation) ─────
+  chatMessages:    [],
+  chatRagMode:     'rag',   // 'rag' | 'web'
+  chatSelectedDoc: '',
+  chatShowDebug:   false,
+
+  setChatMessages:    (msgs)  => set({ chatMessages: msgs }),
+  appendChatMessage:  (msg)   => set(s => ({ chatMessages: [...s.chatMessages, msg] })),
+  updateLastChatMessage: (updater) =>
+    set(s => {
+      const msgs = [...s.chatMessages]
+      msgs[msgs.length - 1] = updater(msgs[msgs.length - 1])
+      return { chatMessages: msgs }
+    }),
+  clearChatMessages:  ()      => set({ chatMessages: [] }),
+  setChatRagMode:     (mode)  => set({ chatRagMode: mode }),
+  setChatSelectedDoc: (id)    => set({ chatSelectedDoc: id }),
+  setChatShowDebug:   (v)     => set({ chatShowDebug: v }),
+
   // ── Settings state (mirror of config.json) ─────────────────
   settings: {
     primary_model:        'qwen3.5:9b',

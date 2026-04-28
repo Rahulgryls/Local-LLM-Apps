@@ -12,8 +12,9 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Send, Square, Pencil, RotateCcw, ChevronDown, Globe, FileText, ChevronRight, Zap } from 'lucide-react'
+import { Send, Square, Pencil, RotateCcw, ChevronDown, Globe, FileText, ChevronRight, Zap, Copy, Check } from 'lucide-react'
 import CacheRefreshButton from '../components/CacheRefreshButton'
+import useAppStore from '../store/appStore'
 
 // ── SSE stream reader ─────────────────────────────────────────────────────────
 // Parses: data: {"token":"…","done":false}  and  data: {"token":"","done":true,…}
@@ -168,12 +169,20 @@ function TypingDots() {
 // ── Message bubble ────────────────────────────────────────────────────────────
 function MessageBubble({ message, isLast, streaming, onEdit, showDebug, t }) {
   const isUser = message.role === 'user'
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(message.content).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    })
+  }
 
   return (
-    <div className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
+    <div className={`group flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
       <span className="text-xs text-gray-600 px-1">{isUser ? 'You' : 'LAKO'}</span>
 
-      <div className={`group relative max-w-[85%] ${isUser ? 'ml-12' : 'mr-12'}`}>
+      <div className={`relative max-w-[85%] ${isUser ? 'ml-12' : 'mr-12'}`}>
         <div
           className={`rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words ${
             isUser
@@ -200,6 +209,22 @@ function MessageBubble({ message, isLast, streaming, onEdit, showDebug, t }) {
         )}
       </div>
 
+      {/* Action bar — shown below assistant messages on hover (ChatGPT-style) */}
+      {!isUser && !message.isError && message.content && !streaming && (
+        <div className="mr-12 max-w-[85%] flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 px-1">
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-200 hover:bg-gray-800 px-2 py-1 rounded-lg transition-colors"
+            title="Copy response"
+          >
+            {copied
+              ? <><Check size={12} className="text-green-400" /><span className="text-green-400">Copied</span></>
+              : <><Copy size={12} /><span>Copy</span></>
+            }
+          </button>
+        </div>
+      )}
+
       {/* V2 citations + debug timing (assistant only, no error) */}
       {!isUser && !message.isError && (
         <div className="mr-12 w-full max-w-[85%]">
@@ -215,14 +240,23 @@ function MessageBubble({ message, isLast, streaming, onEdit, showDebug, t }) {
 export default function Chat() {
   const { t, i18n } = useTranslation()
 
-  const [messages,      setMessages]      = useState([])
+  // Persistent state (survives navigation) — lives in Zustand
+  const messages         = useAppStore(s => s.chatMessages)
+  const ragMode          = useAppStore(s => s.chatRagMode)
+  const selectedDocId    = useAppStore(s => s.chatSelectedDoc)
+  const showDebug        = useAppStore(s => s.chatShowDebug)
+  const setChatMessages  = useAppStore(s => s.setChatMessages)
+  const clearChatMessages = useAppStore(s => s.clearChatMessages)
+  const updateLastChatMessage = useAppStore(s => s.updateLastChatMessage)
+  const setRagMode       = useAppStore(s => s.setChatRagMode)
+  const setSelectedDocId = useAppStore(s => s.setChatSelectedDoc)
+  const setShowDebug     = useAppStore(s => s.setChatShowDebug)
+
+  // Ephemeral state — resets on each mount (intentional)
   const [prompt,        setPrompt]        = useState('')
   const [loading,       setLoading]       = useState(false)
   const [streaming,     setStreaming]     = useState(false)
-  const [ragMode,       setRagMode]       = useState('rag')   // 'rag' | 'web'
-  const [selectedDocId, setSelectedDocId] = useState('')
   const [v2Docs,        setV2Docs]        = useState([])
-  const [showDebug,     setShowDebug]     = useState(false)
   const [modelReady,    setModelReady]    = useState(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
 
@@ -287,8 +321,8 @@ export default function Chat() {
     setLoading(true)
     setStreaming(false)
 
-    setMessages(prev => [
-      ...prev,
+    setChatMessages([
+      ...messages,
       { role: 'user',      content: userText },
       { role: 'assistant', content: '', sources: [], timing: null, isError: false, isWeb },
     ])
@@ -319,52 +353,29 @@ export default function Chat() {
 
       await readSSEStream(res, {
         onToken: (token) => {
-          setMessages(prev => {
-            const updated = [...prev]
-            const last = { ...updated[updated.length - 1] }
-            last.content += token
-            updated[updated.length - 1] = last
-            return updated
-          })
+          updateLastChatMessage(last => ({ ...last, content: last.content + token }))
         },
         onDone: (sources, timing) => {
-          setMessages(prev => {
-            const updated = [...prev]
-            const last = { ...updated[updated.length - 1] }
-            last.sources = sources
-            last.timing  = timing
-            updated[updated.length - 1] = last
-            return updated
-          })
+          updateLastChatMessage(last => ({ ...last, sources, timing }))
         },
         onError: (errMsg) => {
-          setMessages(prev => {
-            const updated = [...prev]
-            const last = { ...updated[updated.length - 1] }
-            last.content = errMsg
-            last.isError = true
-            updated[updated.length - 1] = last
-            return updated
-          })
+          updateLastChatMessage(last => ({ ...last, content: errMsg, isError: true }))
         },
       })
     } catch (err) {
       if (err.name !== 'AbortError') {
-        setMessages(prev => {
-          const updated = [...prev]
-          const last = { ...updated[updated.length - 1] }
-          last.content = last.content || err.message
-          last.isError = true
-          updated[updated.length - 1] = last
-          return updated
-        })
+        updateLastChatMessage(last => ({
+          ...last,
+          content: last.content || err.message,
+          isError: true,
+        }))
       }
     } finally {
       setLoading(false)
       setStreaming(false)
       abortRef.current = null
     }
-  }, [prompt, loading, streaming, ragMode, selectedDocId, i18n.language])
+  }, [prompt, loading, streaming, ragMode, selectedDocId, i18n.language, messages, setChatMessages, updateLastChatMessage])
 
   const handleStop = () => {
     abortRef.current?.abort()
@@ -375,14 +386,14 @@ export default function Chat() {
   const handleEdit = (message) => {
     const idx = messages.indexOf(message)
     if (idx === -1) return
-    setMessages(prev => prev.slice(0, idx))
+    setChatMessages(messages.slice(0, idx))
     setPrompt(message.content)
     textareaRef.current?.focus()
   }
 
   const handleClear = () => {
     if (loading || streaming) handleStop()
-    setMessages([])
+    clearChatMessages()
     setPrompt('')
   }
 
