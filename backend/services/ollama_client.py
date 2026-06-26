@@ -64,11 +64,16 @@ class OllamaClient:
         prompt: str,
         model: Optional[str] = None,
         system: Optional[str] = None,
+        think: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         POST /api/generate with stream=True.
         Yields tokens as they arrive — one JSON line per token from Ollama.
         Stops when Ollama sends {"done": true}.
+
+        think: when True, enables Qwen3 chain-of-thought reasoning.
+               Caller is responsible for stripping <think>…</think> from output.
+               When None, falls back to the config value (think: false by default).
         """
         effective_model = model or self._primary_model()
         rt = get_ollama_runtime_options()
@@ -78,7 +83,7 @@ class OllamaClient:
             "stream":     True,
             "options":    rt["options"],
             "keep_alive": rt["keep_alive"],
-            "think":      rt["think"],
+            "think":      think if think is not None else rt["think"],
         }
         if system:
             body["system"] = system
@@ -107,10 +112,15 @@ class OllamaClient:
         prompt: str,
         model: Optional[str] = None,
         system: Optional[str] = None,
+        think: Optional[bool] = None,
     ) -> str:
         """
         POST /api/generate with stream=False.
         Returns full response as a single string.
+
+        think: when True, enables Qwen3 chain-of-thought. The <think> block is
+               included in the returned string — strip it if not needed.
+               When None, falls back to the config value.
         """
         effective_model = model or self._primary_model()
         rt = get_ollama_runtime_options()
@@ -120,7 +130,7 @@ class OllamaClient:
             "stream":     False,
             "options":    rt["options"],
             "keep_alive": rt["keep_alive"],
-            "think":      rt["think"],
+            "think":      think if think is not None else rt["think"],
         }
         if system:
             body["system"] = system

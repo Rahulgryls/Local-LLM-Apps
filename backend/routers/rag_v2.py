@@ -137,6 +137,65 @@ def _sse_error(message: str) -> str:
     return _sse({"token": "", "done": True, "error": message, "sources": []})
 
 
+# ── Think-tag stream filter ────────────────────────────────────────────────────
+
+class _ThinkStripper:
+    """
+    Buffer-based filter that removes <think>…</think> blocks from a streaming
+    token output. Qwen3 with think=True emits chain-of-thought reasoning inside
+    <think> tags before producing the visible answer. This class discards those
+    tokens so only the answer reaches the SSE stream.
+
+    The buffer keeps a small tail equal to the length of the opening/closing tag
+    minus one, so a tag split across two adjacent tokens is always caught.
+    """
+    _OPEN  = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._in_think: bool = False
+        self._buf:      str  = ""
+
+    def feed(self, token: str) -> str:
+        """Return the visible portion of *token* (empty string during think block)."""
+        self._buf += token
+        output = ""
+
+        while self._buf:
+            if self._in_think:
+                idx = self._buf.find(self._CLOSE)
+                if idx != -1:
+                    self._in_think = False
+                    # Skip the closing tag and any immediate leading newline
+                    self._buf = self._buf[idx + len(self._CLOSE):].lstrip("\n")
+                else:
+                    keep = len(self._CLOSE) - 1
+                    if len(self._buf) > keep:
+                        self._buf = self._buf[-keep:]
+                    break
+            else:
+                idx = self._buf.find(self._OPEN)
+                if idx != -1:
+                    output += self._buf[:idx]
+                    self._in_think = True
+                    self._buf = self._buf[idx + len(self._OPEN):]
+                else:
+                    keep = len(self._OPEN) - 1
+                    if len(self._buf) > keep:
+                        output += self._buf[:-keep]
+                        self._buf = self._buf[-keep:]
+                    break
+
+        return output
+
+    def flush(self) -> str:
+        """Flush any buffered content at end-of-stream."""
+        if not self._in_think:
+            out, self._buf = self._buf, ""
+            return out
+        return ""
+
+
 # ── Multi-topic query helpers ──────────────────────────────────────────────────
 
 def _is_multi_topic(query: str) -> bool:
@@ -268,13 +327,16 @@ async def _stream_rag(request: QueryRequest):
         yield _sse_error(f"Embedding unavailable: {exc}")
         return
 
-    # ── Query decomposition (multi-topic) ─────────────────────────────────────
+    # ── Query decomposition + think mode detection ─────────────────────────────
     # A single embedding for a compound question is a semantic average that
     # drifts toward synthesis/conclusion pages rather than each topic's source
     # pages.  Decompose into sub-queries so each gets a tight, focused embedding.
-    sub_queries = [request.query]
-    sub_vectors = [vector]
-    if _is_multi_topic(request.query):
+    # Multi-topic queries also get think=True so Qwen3 reasons across chapters
+    # before answering; <think> tags are stripped from the SSE stream below.
+    use_thinking  = _is_multi_topic(request.query)
+    sub_queries   = [request.query]
+    sub_vectors   = [vector]
+    if use_thinking:
         decomposed = await _decompose_query(request.query)
         if len(decomposed) > 1:
             sub_queries = decomposed
@@ -341,15 +403,25 @@ async def _stream_rag(request: QueryRequest):
     timing["assembly_ms"] = round((time.perf_counter() - t3) * 1000)
 
     # ── LLM stream ─────────────────────────────────────────────────────────────
+    # For multi-topic queries, enable Qwen3 chain-of-thought (think=True) so the
+    # model can reason across retrieved chapters before answering.  The stripper
+    # removes the <think>…</think> block from the SSE stream — the user only sees
+    # the final answer while still getting the quality benefit of CoT reasoning.
     response_tokens: list[str] = []
     first_token     = True
     t_llm           = time.perf_counter()
+    stripper        = _ThinkStripper() if use_thinking else None
 
     try:
         async for token in ollama_client.stream_chat(
             prompt = user_prompt,
             system = system_prompt,
+            think  = True if use_thinking else None,
         ):
+            if stripper:
+                token = stripper.feed(token)
+                if not token:
+                    continue
             if first_token:
                 timing["llm_first_token_ms"] = round(
                     (time.perf_counter() - t_llm) * 1000
@@ -357,6 +429,14 @@ async def _stream_rag(request: QueryRequest):
                 first_token = False
             response_tokens.append(token)
             yield _sse_token(token)
+
+        # Flush any tail the stripper held back waiting for a partial tag
+        if stripper:
+            tail = stripper.flush()
+            if tail:
+                response_tokens.append(tail)
+                yield _sse_token(tail)
+
     except Exception as exc:
         logger.error("rag_llm_stream_failed", error=str(exc))
         yield _sse_error(f"AI engine error: {exc}")

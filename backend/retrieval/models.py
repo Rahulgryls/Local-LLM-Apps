@@ -29,6 +29,9 @@ class PageContent(BaseModel):
     score           — Similarity score of the search result that caused
                       this page to be included.  Used by budget_manager
                       to decide which pages to trim first.
+    headers         — Section headings active on this page (e.g. ["Chapter 6",
+                      "Health and Nutrition"]).  Shown in the prompt so the LLM
+                      knows the document structure without reading surrounding pages.
     """
     doc_id:          str
     filename:        str
@@ -36,6 +39,7 @@ class PageContent(BaseModel):
     raw_text:        str
     is_direct_match: bool
     score:           float
+    headers:         list[str] = []
 
 
 class AssembledContext(BaseModel):

@@ -7,6 +7,7 @@ sorts by (doc_id, page_num), and returns an AssembledContext ready for
 the budget manager.
 """
 
+import json as _json
 import logging
 from typing import Optional
 
@@ -73,11 +74,39 @@ async def fetch_context(
     pages: list[PageContent] = []
     filenames: dict[str, str] = {sr.doc_id: sr.filename for sr in search_results}
 
+    # Build a lookup of summary_text carried from the search result (V3/Confluence
+    # docs are not in the SQLite pages table — their text lives in Qdrant payload)
+    sr_text: dict[tuple[str, int], str] = {
+        (sr.doc_id, sr.page_num): sr.summary_text
+        for sr in search_results
+        if sr.summary_text
+    }
+
     for (doc_id, page_num), meta in sorted(slots.items()):
         row = await get_page_by_num(doc_id, page_num)
+
         if row is None:
-            logger.debug("buffer_page_missing", doc_id=doc_id, page_num=page_num)
+            # V3 / Confluence doc — not in lako_v2.db pages table.
+            # Fall back to the text carried in the SearchResult payload.
+            fallback_text = sr_text.get((doc_id, page_num), "")
+            if not fallback_text:
+                logger.debug("buffer_page_missing", doc_id=doc_id, page_num=page_num)
+                continue
+            pages.append(PageContent(
+                doc_id          = doc_id,
+                filename        = filenames.get(doc_id, ""),
+                page_num        = page_num,
+                raw_text        = fallback_text,
+                is_direct_match = meta["is_direct"],
+                score           = meta["score"],
+            ))
             continue
+
+        try:
+            raw_hdrs = row.get("headers", "[]")
+            page_headers = _json.loads(raw_hdrs) if isinstance(raw_hdrs, str) else (raw_hdrs or [])
+        except Exception:
+            page_headers = []
 
         pages.append(PageContent(
             doc_id          = doc_id,
@@ -86,6 +115,7 @@ async def fetch_context(
             raw_text        = row["raw_text"],
             is_direct_match = meta["is_direct"],
             score           = meta["score"],
+            headers         = page_headers,
         ))
 
     # ── Compute token estimate and sources ─────────────────────────────────────
