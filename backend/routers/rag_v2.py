@@ -8,6 +8,11 @@ Request body (JSON):
   language     — "en" | "nl"  (default "en")
   rag_enabled  — true = search documents; false = web search (default true)
   doc_id       — optional UUID to restrict search to one document
+  history      — optional list of {role, content} prior turns (oldest first).
+                 When present, follow-up questions are rewritten into a
+                 standalone search query before retrieval, and the raw
+                 history is included in the final answer prompt. Disables
+                 the query cache for that request.
 
 SSE streaming response format:
   data: {"token": "<chunk>", "done": false}   — one per LLM token
@@ -39,7 +44,7 @@ from cache import embedding_cache, query_cache
 from config import get_ollama_runtime_options
 from retrieval.budget_manager import apply_budget
 from retrieval.context_fetcher import fetch_context
-from retrieval.models import QueryRequest, SearchResult
+from retrieval.models import Message, QueryRequest, SearchResult
 from retrieval.prompt_builder import build_query_prompt, build_web_prompt
 from retrieval.searcher import search_pages
 from retrieval.web_searcher import web_search
@@ -196,6 +201,42 @@ class _ThinkStripper:
         return ""
 
 
+# ── Sessional context helpers ──────────────────────────────────────────────────
+
+async def _contextualize_query(query: str, history: list[Message]) -> str:
+    """
+    Rewrite a follow-up question into a standalone search query using recent
+    conversation turns, so retrieval isn't blind to references like "that" or
+    "the other one" from earlier in the chat. The rewritten query is used only
+    for embedding/search — the LLM's final answer still targets the user's
+    original wording (passed separately as conversation history).
+    Falls back to the original query on any LLM error or malformed output.
+    """
+    from services.ollama_client import ollama_client
+
+    convo = "\n".join(f"{m.role}: {m.content}" for m in history)
+    prompt = (
+        f"Conversation so far:\n{convo}\n\n"
+        f"Follow-up question: {query}\n\n"
+        "Rewrite the follow-up question as a standalone question that can be "
+        "understood without the conversation above. Resolve pronouns and "
+        "implicit references (e.g. \"that\", \"the other one\") using the "
+        "conversation. Output ONLY the rewritten question, nothing else."
+    )
+    system = (
+        "You rewrite follow-up questions into standalone search questions. "
+        "Output only the rewritten question, nothing else."
+    )
+    try:
+        rewritten = (await ollama_client.chat(prompt, system=system)).strip().strip('"')
+        if rewritten and len(rewritten) < 500:
+            logger.info("query_contextualized", original=query[:80], rewritten=rewritten[:80])
+            return rewritten
+    except Exception as exc:
+        logger.warning("contextualize_failed", error=str(exc))
+    return query
+
+
 # ── Multi-topic query helpers ──────────────────────────────────────────────────
 
 def _is_multi_topic(query: str) -> bool:
@@ -302,8 +343,8 @@ async def _stream_rag(request: QueryRequest):
 
     timing: dict = {}
 
-    # ── Cache check (skip for doc_id-filtered queries) ─────────────────────────
-    use_cache = not request.doc_id
+    # ── Cache check (skip for doc_id-filtered or conversational queries) ───────
+    use_cache = not request.doc_id and not request.history
     if use_cache:
         cached = await query_cache.get(request.query)
         if cached:
@@ -314,13 +355,22 @@ async def _stream_rag(request: QueryRequest):
             yield _sse_done(cached["sources"], timing={"cache_hit": True})
             return
 
+    # ── Contextualize follow-up questions using recent chat history ────────────
+    # Retrieval needs a self-contained query: "what about clause 3 of that" means
+    # nothing to the embedder without the prior turns. The rewritten query is
+    # used only for search — the LLM still answers the user's original wording,
+    # with the raw history passed alongside it in the final prompt.
+    search_query = request.query
+    if request.history:
+        search_query = await _contextualize_query(request.query, request.history)
+
     # ── Embed query with cache ─────────────────────────────────────────────────
     t0 = time.perf_counter()
     try:
-        vector = await embedding_cache.get(request.query)
+        vector = await embedding_cache.get(search_query)
         if vector is None:
-            vector = await ollama_client.embed(request.query)
-            await embedding_cache.put(request.query, vector)
+            vector = await ollama_client.embed(search_query)
+            await embedding_cache.put(search_query, vector)
         timing["embedding_ms"] = round((time.perf_counter() - t0) * 1000)
     except Exception as exc:
         logger.error("embed_failed", error=str(exc))
@@ -333,11 +383,11 @@ async def _stream_rag(request: QueryRequest):
     # pages.  Decompose into sub-queries so each gets a tight, focused embedding.
     # Multi-topic queries also get think=True so Qwen3 reasons across chapters
     # before answering; <think> tags are stripped from the SSE stream below.
-    use_thinking  = _is_multi_topic(request.query)
-    sub_queries   = [request.query]
+    use_thinking  = _is_multi_topic(search_query)
+    sub_queries   = [search_query]
     sub_vectors   = [vector]
     if use_thinking:
-        decomposed = await _decompose_query(request.query)
+        decomposed = await _decompose_query(search_query)
         if len(decomposed) > 1:
             sub_queries = decomposed
             raw_vecs = await asyncio.gather(*[
@@ -357,7 +407,7 @@ async def _stream_rag(request: QueryRequest):
         buffer_pages    = cfg.get("buffer_pages", 1)
         if len(sub_queries) == 1:
             search_results = await search_pages(
-                query           = request.query,
+                query           = search_query,
                 top_k           = top_k,
                 score_threshold = score_threshold,
                 doc_id_filter   = request.doc_id,
@@ -398,7 +448,7 @@ async def _stream_rag(request: QueryRequest):
     t3 = time.perf_counter()
     trimmed = await apply_budget(assembled)
     user_prompt, system_prompt = build_query_prompt(
-        request.query, trimmed, request.language
+        request.query, trimmed, request.language, history=request.history
     )
     timing["assembly_ms"] = round((time.perf_counter() - t3) * 1000)
 
@@ -448,7 +498,7 @@ async def _stream_rag(request: QueryRequest):
 
     # ── Retrieval miss detection (advisory — does not block response) ──────────
     retrieval_warning = _detect_retrieval_miss(
-        request.query, full_response, trimmed.pages
+        search_query, full_response, trimmed.pages
     )
     if retrieval_warning:
         logger.warning(
@@ -486,7 +536,11 @@ async def _stream_web(request: QueryRequest):
         query=request.query[:80],
     )
 
-    web_results = await web_search(request.query, num_results=5)
+    search_query = request.query
+    if request.history:
+        search_query = await _contextualize_query(request.query, request.history)
+
+    web_results = await web_search(search_query, num_results=5)
 
     if not web_results:
         unavailable_msg = (
@@ -500,7 +554,7 @@ async def _stream_web(request: QueryRequest):
         return
 
     user_prompt, system_prompt = build_web_prompt(
-        request.query, web_results, request.language
+        request.query, web_results, request.language, history=request.history
     )
 
     timing: dict = {}

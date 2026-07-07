@@ -63,11 +63,18 @@ class WebResult(BaseModel):
     snippet: str
 
 
+class Message(BaseModel):
+    """One prior turn in the conversation, as kept by the frontend chat store."""
+    role:    str    # "user" | "assistant"
+    content: str
+
+
 class QueryRequest(BaseModel):
     query:       str
     language:    str  = "en"    # "en" | "nl"
     rag_enabled: bool = True
     doc_id:      Optional[str] = None     # filter to a specific document
+    history:     list[Message] = []       # recent turns, oldest first
 
 
 class QueryResponse(BaseModel):

@@ -1,14 +1,20 @@
 # LAKO — Local AI Knowledge Orchestrator
 
 **Version:** V1 + V2 + V3 (complete)
-**Build:** 22 sessions (V1) + V2 Session 5 + V3 ingestion pipeline + query performance tuning + cross-domain retrieval fix + DOCX V2 support + Confluence table chunking overhaul
+**Build:** 22 sessions (V1) + V2 Session 5 + V3 ingestion pipeline + query performance tuning + cross-domain retrieval fix + DOCX V2 support + Confluence table chunking overhaul + rotation-aware ingestion + retrieval quality guards
 **Target:** Internal bank AI knowledge platform (Rabobank)
 **Developer:** Vibe coding — Claude Code + OpenClaw
-**Last updated:** Confluence enterprise-grade table chunking — 2026-04-10
+**Last updated:** Sessional context for follow-up questions — 2026-07-07
+
+> **Sessional context — 2026-07-07.** `/api/v2/query` now accepts an optional `history` field (last 3 user/assistant turns, sent by `Chat.jsx` from the existing Zustand chat state). When present, `_contextualize_query` (`routers/rag_v2.py`) uses the LLM to rewrite follow-up questions into standalone search queries — e.g. "which awards did it win?" → "which awards did the Light Bank app win?" — before embedding and Qdrant search, so pronoun/reference-heavy follow-ups retrieve the right pages. The raw history (not the rewritten query) is also folded into the final answer prompt via `build_query_prompt`/`build_web_prompt` so the LLM keeps conversational grounding. Query cache is bypassed whenever `history` is present (same treatment as `doc_id`-filtered queries), since the cache key doesn't account for conversation state. No new persistence — this reuses the frontend's existing in-memory chat thread; nothing is saved server-side and history resets on `Clear` or page refresh.
 
 > **V2 "Smart Index, Full Context" architecture — fully built.** V1 endpoints remain fully functional. V2 has a complete parallel pipeline under `/api/v2/`: SQLite document store + Qdrant vector index, LLM page summaries as the search index, full raw-page text as reasoning context, SSE streaming with timing, query + embedding cache, model pre-warming, and SearXNG web search mode. The React frontend is fully updated for V2.
 
 > **V3 "Direct-RAG" ingestion pipeline — fully built.** V3 adds a new ingestion service under `/api/v3/` that skips LLM summarisation entirely — raw text is preserved and chunked directly. Supports PDF, DOCX, PPTX, XLSX, and HTML. Page classifier routes each page to TEXT_RICH (sentence-boundary chunking), TABLE (pdfplumber flatten), IMAGE_ONLY (vision model), or MIXED (text + per-image vision). Qdrant runs embedded (no Docker). Original files stored at `storage/documents/{doc_id}/original.{ext}`. 35 unit tests pass.
+
+> **128K context window + cache clear button — 2026-05-03.** `num_ctx` raised from 20K to 131,072 tokens and `num_predict` from 3K to 6K — Qwen 3.5's 262K window was previously unused. `MAX_CONTEXT_TOKENS` in the budget manager raised from 12K to 100K, giving the LLM ~8× more document context per query before trimming kicks in. `DELETE /api/cache` now flushes both V1 and V2 query caches in one call; the existing `CacheRefreshButton` in the Chat UI works for both pipelines.
+
+> **Rotation-aware ingestion + retrieval quality guards — 2026-04-29.** Fixes a class of silent ingestion failures where rotated PDF pages (landscape tables on portrait paper) were embedded in glyph order, producing garbage vectors. `_detect_page_rotation` uses PyMuPDF span `dir` metadata to detect non-horizontal text deterministically. Rotated pages are routed to 200-dpi vision OCR before chunking. V2 `pdf_extractor.extract_pdf` receives the same fix. Every Qdrant payload now carries `extraction_quality` and `rotation_detected` fields. A post-ingest probe (`services/quality_probe.py`) checks whether the document's own title is retrievable at score > 0.5 and persists the result as `ingest_quality` in the `documents` table (`clean | mixed | suspect`). `_stream_rag` now emits a `retrieval_warning` SSE field when the LLM signals a miss but query tokens are absent from the retrieved context. 48 unit tests pass.
 
 > **Confluence table chunking overhaul — 2026-04-10.** `parse_page_content` now uses enterprise-grade table handling: `_materialize_table` builds a full 2D grid resolving colspan/rowspan, multi-row headers merged as `"Parent / Child"`. Each table produces a `table_summary` chunk (row count + column names) and row-level `table_row` chunks formatted as `"Header: Value\nHeader: Value"` key-value pairs. Rows merged up to TOKEN_LIMIT. Section heading prepended to every chunk. Inspired by DocLLM (JP Morgan) and Glean-style structured retrieval. No LLM call — zero ingestion overhead.
 
@@ -98,6 +104,7 @@ Single-model stack eliminates cold-start swapping. Ollama auto-unloads after 5 m
 
 | Session | Key Changes |
 |---|---|
+| 18 | **Chat UX overhaul** — Copy response button (ChatGPT-style hover action bar below each AI message, Copy/Check icon toggle with green confirmation). Chat state persisted across React Router navigation via Zustand global store — messages, RAG mode, selected doc, and debug toggle survive page switches until Clear is explicitly clicked. `LAKO_CODEBASE_SOURCE_OF_TRUTH.txt` generated (~700 KB structured text file covering all source code + architecture + API reference + design decisions, for Claude Project ingestion). |
 | 21 | Claude-style Chat UI — conversation thread, stop button, edit message, typing dots, auto-scroll |
 | 22 | **Multi-topic intent class** — queries with multiple independent "?" now route through decompose→per-sub-query retrieval→multi-topic synthesis prompt. Cache refresh button (GET /api/cache/stats, DELETE /api/cache) with frontend badge in Chat toolbar. Table summary prompt improved to paraphrase values in plain language for better BM25 matching. Dashboard "Time Consumed" column. Skipped badge fix. |
 | V3 | **V3 Direct-RAG ingestion pipeline** — `ingestion/service.py` with PDF page classifier (TEXT_RICH / TABLE / IMAGE_ONLY / MIXED), `smart_chunk()` with sentence-boundary splitting and 50-token overlap, DOCX/PPTX/XLSX/HTML sub-pipelines, `db/chunk_store.py` (storage/lako.db), `routers/ingest_v3.py` with background tasks + status polling + file download + delete. 35 unit tests in `tests/test_ingestion.py`. |
@@ -969,7 +976,7 @@ LAKO's documentation is designed to be uploaded to NotebookLM to create a privat
 
 ### Key design decisions
 
-**SSE parsed via `fetch + ReadableStream`, not `EventSource`:** The V2 query endpoint requires a POST body (`{query, language, rag_enabled, doc_id}`). `EventSource` only supports GET with no body. `fetch` with a manual SSE parser gives identical streaming behaviour and works with POST.
+**SSE parsed via `fetch + ReadableStream`, not `EventSource`:** The V2 query endpoint requires a POST body (`{query, language, rag_enabled, doc_id, history}`). `EventSource` only supports GET with no body. `fetch` with a manual SSE parser gives identical streaming behaviour and works with POST.
 
 **SSE buffer split on `\n\n`:** Each SSE event is terminated by a double newline. The parser splits the accumulated buffer on `\n\n`, processes complete events, and keeps any incomplete trailing event in the buffer for the next `reader.read()` iteration.
 

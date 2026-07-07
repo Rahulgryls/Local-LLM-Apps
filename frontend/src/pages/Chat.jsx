@@ -330,6 +330,13 @@ export default function Chat() {
     const controller = new AbortController()
     abortRef.current = controller
 
+    // Last 3 user/assistant turns, so follow-ups ("what about that clause")
+    // can be resolved server-side without resending the whole thread.
+    const history = messages
+      .filter(m => m.content && !m.isError)
+      .slice(-6)
+      .map(m => ({ role: m.role, content: m.content }))
+
     try {
       const res = await fetch('/api/v2/query', {
         method:  'POST',
@@ -339,6 +346,7 @@ export default function Chat() {
           language,
           rag_enabled: !isWeb,
           doc_id:      selectedDocId || null,
+          history,
         }),
         signal: controller.signal,
       })

@@ -8,7 +8,7 @@ pass them to Ollama's separate prompt / system fields.
 Also builds the web-search prompt used when RAG is disabled.
 """
 
-from retrieval.models import AssembledContext, WebResult
+from retrieval.models import AssembledContext, Message, WebResult
 
 # ── System prompts ─────────────────────────────────────────────────────────────
 
@@ -81,19 +81,33 @@ def _web_system_prompt(language: str) -> str:
     return _WEB_SYSTEM_NL if language.lower().startswith("nl") else _WEB_SYSTEM_EN
 
 
+def _history_section(history: list[Message] | None) -> list[str]:
+    """Render prior turns as a labelled block, or [] if there's no history."""
+    if not history:
+        return []
+    lines = ["--- CONVERSATION SO FAR ---\n"]
+    for msg in history:
+        speaker = "User" if msg.role == "user" else "Assistant"
+        lines.append(f"{speaker}: {msg.content}")
+    lines.append("--- END CONVERSATION ---\n")
+    return lines
+
+
 # ── RAG prompt builder ─────────────────────────────────────────────────────────
 
 def build_query_prompt(
     query:    str,
     context:  AssembledContext,
     language: str = "en",
+    history:  list[Message] | None = None,
 ) -> tuple[str, str]:
     """
     Build the (user_prompt, system_prompt) pair for a RAG query.
 
-    The user_prompt contains all document pages grouped by document,
-    followed by the question.  The system_prompt carries the LAKO
-    identity and citation rules.
+    The user_prompt optionally leads with recent conversation turns (so the
+    model can resolve references like "that" or "the other one"), then all
+    document pages grouped by document, followed by the question.  The
+    system_prompt carries the LAKO identity and citation rules.
 
     Returns:
         (user_prompt, system_prompt)
@@ -103,7 +117,8 @@ def build_query_prompt(
     for page in context.pages:
         by_doc.setdefault(page.doc_id, []).append(page)
 
-    sections: list[str] = ["--- DOCUMENT PAGES ---\n"]
+    sections: list[str] = _history_section(history)
+    sections.append("--- DOCUMENT PAGES ---\n")
     for doc_id, pages in by_doc.items():
         for page in pages:
             header_trail = " > ".join(page.headers) if page.headers else ""
@@ -129,6 +144,7 @@ def build_web_prompt(
     query:       str,
     web_results: list[WebResult],
     language:    str = "en",
+    history:     list[Message] | None = None,
 ) -> tuple[str, str]:
     """
     Build the (user_prompt, system_prompt) pair for a web-search query.
@@ -136,7 +152,8 @@ def build_web_prompt(
     Returns:
         (user_prompt, system_prompt)
     """
-    sections: list[str] = ["--- WEB RESULTS ---\n"]
+    sections: list[str] = _history_section(history)
+    sections.append("--- WEB RESULTS ---\n")
     for i, r in enumerate(web_results, start=1):
         sections.append(f"[{i}] {r.title}")
         sections.append(f"URL: {r.url}")
