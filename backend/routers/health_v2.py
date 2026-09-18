@@ -13,12 +13,13 @@ Session 4: added /api/v2/ready and cache_stats field on /api/v2/health.
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from cache import query_cache
 from db.document_store import get_document, clear_all_documents
 from ingestion.embedder_v2 import collection_stats, reindex_all, reindex_document, COLLECTION_NAME, _get_qdrant
+from services.auth_deps import require_permission
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -102,6 +103,7 @@ async def v2_ready() -> ReadyResponse:
     response_model=ReindexResponse,
     summary="Re-summarise and re-embed a single document (V2)",
     tags=["V2 Health"],
+    dependencies=[Depends(require_permission("admin"))],
 )
 async def reindex_document_endpoint(
     doc_id: str,
@@ -124,6 +126,7 @@ async def reindex_document_endpoint(
     response_model=ReindexResponse,
     summary="Rebuild entire Qdrant collection from SQLite (V2)",
     tags=["V2 Health"],
+    dependencies=[Depends(require_permission("admin"))],
 )
 async def reindex_all_endpoint(
     background_tasks: BackgroundTasks,
@@ -147,6 +150,7 @@ class ClearResponse(BaseModel):
     response_model=ClearResponse,
     summary="Wipe all V2 data (Qdrant + SQLite + cache)",
     tags=["V2 Health"],
+    dependencies=[Depends(require_permission("admin"))],
 )
 async def clear_v2() -> ClearResponse:
     """
@@ -175,6 +179,15 @@ async def clear_v2() -> ClearResponse:
     # ── Cache ─────────────────────────────────────────────────────────────────
     await query_cache.clear()
 
+    # BM25 index is now empty — rebuild immediately (will return 0 docs, cheap)
+    try:
+        from config import get_config as _get_cfg
+        if _get_cfg().get("hybrid_search_enabled", True):
+            from retrieval.bm25_index import rebuild_bm25_index
+            await rebuild_bm25_index()
+    except Exception as _bm25_exc:
+        logger.warning("bm25_rebuild_failed", error=str(_bm25_exc))
+
     logger.info("v2_clear_complete", deleted_docs=deleted_docs, deleted_points=points)
     return ClearResponse(
         status         = "cleared",
@@ -189,6 +202,13 @@ async def _run_reindex_document(doc_id: str) -> None:
     try:
         await reindex_document(doc_id)
         await query_cache.clear()   # stale answers may reference old summaries
+        try:
+            from config import get_config as _get_cfg
+            if _get_cfg().get("hybrid_search_enabled", True):
+                from retrieval.bm25_index import rebuild_bm25_index
+                await rebuild_bm25_index()
+        except Exception as _bm25_exc:
+            logger.warning("bm25_rebuild_failed", error=str(_bm25_exc))
         logger.info("reindex_document_done_cache_cleared", doc_id=doc_id)
     except Exception as exc:
         logger.error("reindex_document_failed", doc_id=doc_id, error=str(exc))
@@ -198,6 +218,13 @@ async def _run_reindex_all() -> None:
     try:
         total = await reindex_all()
         await query_cache.clear()
+        try:
+            from config import get_config as _get_cfg
+            if _get_cfg().get("hybrid_search_enabled", True):
+                from retrieval.bm25_index import rebuild_bm25_index
+                await rebuild_bm25_index()
+        except Exception as _bm25_exc:
+            logger.warning("bm25_rebuild_failed", error=str(_bm25_exc))
         logger.info("reindex_all_done", total_points=total)
     except Exception as exc:
         logger.error("reindex_all_failed", error=str(exc))

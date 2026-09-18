@@ -25,11 +25,20 @@ import fitz  # PyMuPDF
 import pdfplumber
 
 from db.document_store import insert_page, update_document_status
+from ingestion.service import _detect_page_rotation
 
 _OCR_PROMPT = (
     "Transcribe all text visible on this document page exactly as written. "
     "Preserve headings, bullet points, tables, and numbers. "
     "Output only the transcribed text — no commentary."
+)
+
+_ROTATED_OCR_PROMPT = (
+    "This page contains rotated content (likely a wide table "
+    "rotated 90 degrees). Read it in its natural orientation. "
+    "Extract ALL text, preserving the table structure as a markdown "
+    "table. Include every row, every column header, and every data "
+    "cell exactly as printed. Do not summarise. Do not skip rows."
 )
 
 logger = logging.getLogger(__name__)
@@ -170,30 +179,52 @@ async def extract_pdf(
         raw_text   = fitz_page.get_text("text").strip()
         char_count = len(raw_text)
 
-        # Scanned page — render to PNG and OCR via vision model
-        if char_count < 50:
-            logger.debug("Page %d of %s is scanned — running OCR", page_num, path.name)
+        # Rotation check: rotated pages have unreadable glyph-order text —
+        # run vision OCR regardless of char_count.
+        if _detect_page_rotation(fitz_page) == "rotated":
+            logger.debug(
+                "Page %d of %s has rotated content — running vision OCR",
+                page_num, path.name,
+            )
             try:
                 from services.vision_service import vision_service
-                mat      = fitz.Matrix(2.0, 2.0)   # 2× zoom → ~144 dpi
-                pix      = fitz_page.get_pixmap(matrix=mat, alpha=False)
+                scale     = 200 / 72  # 200 dpi for table detail
+                mat       = fitz.Matrix(scale, scale)
+                pix       = fitz_page.get_pixmap(matrix=mat, alpha=False)
                 img_bytes = pix.tobytes("png")
-                ocr_text  = await vision_service.describe_image_bytes(img_bytes, _OCR_PROMPT)
+                ocr_text  = await vision_service.describe_image_bytes(img_bytes, _ROTATED_OCR_PROMPT)
                 if ocr_text and len(ocr_text.strip()) > 20:
                     raw_text   = ocr_text
                     char_count = len(raw_text)
             except Exception as exc:
-                logger.warning("OCR failed for page %d: %s", page_num, exc)
-
-        headers = _extract_headers(fitz_page)
-
-        # Only call pdfplumber when the cheap heuristic fires
-        if _looks_like_table_page(raw_text):
-            has_tables = _extract_tables_pdfplumber(str(path), idx)
-            if has_tables:
-                plumber_hits += 1
+                logger.warning("Rotated OCR failed for page %d: %s", page_num, exc)
+            headers    = []
+            has_tables = True
         else:
-            has_tables = False
+            # Scanned page (no rotation) — render to PNG and OCR via vision model
+            if char_count < 50:
+                logger.debug("Page %d of %s is scanned — running OCR", page_num, path.name)
+                try:
+                    from services.vision_service import vision_service
+                    mat       = fitz.Matrix(2.0, 2.0)   # 2× zoom → ~144 dpi
+                    pix       = fitz_page.get_pixmap(matrix=mat, alpha=False)
+                    img_bytes = pix.tobytes("png")
+                    ocr_text  = await vision_service.describe_image_bytes(img_bytes, _OCR_PROMPT)
+                    if ocr_text and len(ocr_text.strip()) > 20:
+                        raw_text   = ocr_text
+                        char_count = len(raw_text)
+                except Exception as exc:
+                    logger.warning("OCR failed for page %d: %s", page_num, exc)
+
+            headers = _extract_headers(fitz_page)
+
+            # Only call pdfplumber when the cheap heuristic fires
+            if _looks_like_table_page(raw_text):
+                has_tables = _extract_tables_pdfplumber(str(path), idx)
+                if has_tables:
+                    plumber_hits += 1
+            else:
+                has_tables = False
 
         await insert_page(
             doc_id=doc_id,

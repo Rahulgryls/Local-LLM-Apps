@@ -47,6 +47,7 @@ class ActivityLog:
         error: Optional[str] = None,
         duration_seconds: Optional[float] = None,
         source: str = "v1",       # "v1" | "v2"
+        file_size_mb: Optional[float] = None,
     ) -> None:
         """Append a new ingestion event and trim to MAX_ENTRIES."""
         entry = {
@@ -58,6 +59,7 @@ class ActivityLog:
             "status": status,
             "error": error,
             "duration_seconds": round(duration_seconds, 1) if duration_seconds is not None else None,
+            "file_size_mb": round(file_size_mb, 2) if file_size_mb is not None else None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         entries = self._load()

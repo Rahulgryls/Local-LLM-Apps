@@ -75,7 +75,7 @@ class StatusResponse(BaseModel):
 
 # ── Background task ───────────────────────────────────────────────────────────
 
-async def _run_ingestion(job_id: str, file_path: str, source_type: str, filename: str) -> None:
+async def _run_ingestion(job_id: str, file_path: str, source_type: str, filename: str, file_size_mb: float = 0.0) -> None:
     """
     Background task that drives the orchestrator and keeps _jobs up-to-date.
     Cleans up the staging file when done (success or failure).
@@ -117,10 +117,19 @@ async def _run_ingestion(job_id: str, file_path: str, source_type: str, filename
             status           = "success",
             duration_seconds = duration,
             source           = "v2",
+            file_size_mb     = file_size_mb,
         )
         # Invalidate query cache — new document may make previous answers stale
         from cache import query_cache
         await query_cache.clear()
+        # Rebuild BM25 index so the new document is searchable by keyword
+        try:
+            from config import get_config as _get_cfg
+            if _get_cfg().get("hybrid_search_enabled", True):
+                from retrieval.bm25_index import rebuild_bm25_index
+                await rebuild_bm25_index()
+        except Exception as _bm25_exc:
+            logger.warning("bm25_rebuild_failed", error=str(_bm25_exc))
         logger.info("job_complete", job_id=job_id, doc_id=real_doc_id)
     except Exception as exc:
         duration = time.time() - _start
@@ -137,6 +146,7 @@ async def _run_ingestion(job_id: str, file_path: str, source_type: str, filename
             error            = str(exc),
             duration_seconds = duration,
             source           = "v2",
+            file_size_mb     = file_size_mb,
         )
         logger.error("job_failed", job_id=job_id, error=str(exc))
     finally:
@@ -195,7 +205,7 @@ async def ingest_file(
     )
 
     background_tasks.add_task(
-        _run_ingestion, job_id, str(staged_path), source_type, file.filename
+        _run_ingestion, job_id, str(staged_path), source_type, file.filename, len(content) / 1_048_576
     )
 
     return IngestResponse(

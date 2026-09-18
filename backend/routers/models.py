@@ -6,11 +6,12 @@ POST /api/config  — Write updated fields to config.json
 Session 3: Fully implemented.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 
 from config import get_config, save_config
+from services.auth_deps import require_permission
 from services.ollama_client import ollama_client
 
 router = APIRouter()
@@ -153,11 +154,14 @@ async def read_config():
     return get_config()
 
 
-@router.post("/config")
+@router.post("/config", dependencies=[Depends(require_permission("admin"))])
 async def update_config(request: ConfigUpdateRequest):
     """
     Save updated config fields to config.json and reload.
     Only fields that are present in the request body are updated.
+
+    Requires an "admin"-permission X-API-Key — this can rewrite stored
+    credentials (Confluence token, API keys) and model/infra settings.
     """
     # Build update dict — exclude fields not sent (None means not provided)
     updates = {k: v for k, v in request.model_dump().items() if v is not None}

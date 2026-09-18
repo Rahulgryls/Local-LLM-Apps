@@ -47,6 +47,7 @@
     "colType":                "Type",
     "colTitle":               "Titel",
     "colChunks":              "Fragmenten / Pagina's",
+    "colSize":                "Grootte",
     "colStatus":              "Status",
     "colDuration":            "Tijd Verbruikt",
     "colTime":                "Tijd",

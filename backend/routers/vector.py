@@ -5,9 +5,10 @@ DELETE /api/vector/clear  — Delete all chunks from collection
 Session 4: Fully implemented.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from services.auth_deps import require_permission
 from services.chroma_client import chroma_client
 
 router = APIRouter()
@@ -40,7 +41,11 @@ async def vector_status():
     )
 
 
-@router.delete("/vector/clear", response_model=ClearResponse)
+@router.delete(
+    "/vector/clear",
+    response_model=ClearResponse,
+    dependencies=[Depends(require_permission("admin"))],
+)
 async def clear_vector_db():
     """
     Delete all document chunks from the ChromaDB collection.

@@ -45,3 +45,6 @@ aiosqlite                 # Async SQLite access for V2 document store
 structlog                 # Structured logging for V2 pipeline
 
 qdrant-client             # Qdrant vector DB client for V2 pipeline
+
+# ── MCP Server ─────────────────────────────────────────────────
+mcp                       # Official Model Context Protocol SDK — external tool-calling clients

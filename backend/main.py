@@ -10,15 +10,17 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from contextlib import asynccontextmanager
+from fastapi.responses import FileResponse, JSONResponse
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from config import get_config
 from routers import chat, rag, ingest, confluence, models, vector, gateway, admin, dashboard
 from routers import ingest_v2, health_v2, rag_v2
-from routers import ingest_v3
+from routers import ingest_v3, confluence_v3
+from services.api_key_manager import api_key_manager
+import mcp_server
 
 logger = logging.getLogger(__name__)
 
@@ -33,45 +35,60 @@ async def lifespan(app: FastAPI):
     from services.model_warmer import warm_models, get_status
     from services.http_client import close_ollama_http_client
 
-    config  = get_config()
-    primary = config["primary_model"]
-    embed   = config["embedding_model"]
+    async with AsyncExitStack() as stack:
+        # MCP's StreamableHTTPSessionManager must be entered exactly once, for
+        # the life of the process — this is that one place. Without it, MCP
+        # tool calls fail because the session manager was never started.
+        await stack.enter_async_context(mcp_server.mcp.session_manager.run())
 
-    print(f"[LAKO] Starting up...")
-    print(f"[LAKO] Primary LLM  : {primary}")
-    print(f"[LAKO] Vision Model : {config['vision_model']}")
-    print(f"[LAKO] Embeddings   : {embed}")
-    print(f"[LAKO] Ollama URL   : {config['ollama_url']}")
-    print(f"[LAKO] ChromaDB     : {config['chromadb_path']}")
+        config  = get_config()
+        primary = config["primary_model"]
+        embed   = config["embedding_model"]
 
-    # ── V2 model pre-warming (LLM + embedder via shared HTTP client) ──────────
-    print(f"[LAKO] Warming models: {primary} + {embed} ...")
-    await warm_models(
-        primary_model   = primary,
-        embedding_model = embed,
-        ollama_url      = config["ollama_url"],
-    )
+        print(f"[LAKO] Starting up...")
+        print(f"[LAKO] Primary LLM  : {primary}")
+        print(f"[LAKO] Vision Model : {config['vision_model']}")
+        print(f"[LAKO] Embeddings   : {embed}")
+        print(f"[LAKO] Ollama URL   : {config['ollama_url']}")
+        print(f"[LAKO] ChromaDB     : {config['chromadb_path']}")
 
-    # Keep legacy _model_ready dict in sync for the /health endpoint
-    status = get_status()
-    _model_ready["ready"] = status["llm"]
-    _model_ready["model"] = status["model_name"] or primary
-    print(
-        f"[LAKO] LLM ready     : {status['llm']} ✓"
-        if status["llm"] else
-        f"[LAKO] LLM warm-up failed — run: ollama pull {primary}"
-    )
-    print(
-        f"[LAKO] Embedder ready: {status['embedder']} ✓"
-        if status["embedder"] else
-        f"[LAKO] Embedder warm-up failed — run: ollama pull {embed}"
-    )
-    print("[LAKO] Backend ready — http://localhost:8000")
+        # ── V2 model pre-warming (LLM + embedder via shared HTTP client) ──────
+        print(f"[LAKO] Warming models: {primary} + {embed} ...")
+        await warm_models(
+            primary_model   = primary,
+            embedding_model = embed,
+            ollama_url      = config["ollama_url"],
+        )
 
-    yield
+        # Keep legacy _model_ready dict in sync for the /health endpoint
+        status = get_status()
+        _model_ready["ready"] = status["llm"]
+        _model_ready["model"] = status["model_name"] or primary
+        print(
+            f"[LAKO] LLM ready     : {status['llm']} ✓"
+            if status["llm"] else
+            f"[LAKO] LLM warm-up failed — run: ollama pull {primary}"
+        )
+        print(
+            f"[LAKO] Embedder ready: {status['embedder']} ✓"
+            if status["embedder"] else
+            f"[LAKO] Embedder warm-up failed — run: ollama pull {embed}"
+        )
+        # ── BM25 hybrid-search index ──────────────────────────────────────────
+        if config.get("hybrid_search_enabled", True):
+            try:
+                from retrieval.bm25_index import rebuild_bm25_index
+                await rebuild_bm25_index()
+            except Exception as _bm25_exc:
+                print(f"[LAKO] BM25 index build failed (non-fatal): {_bm25_exc}")
 
-    print("[LAKO] Shutting down...")
-    await close_ollama_http_client()
+        print("[LAKO] Backend ready — http://localhost:8000")
+        print("[LAKO] MCP server    — http://localhost:8000/mcp/")
+
+        yield
+
+        print("[LAKO] Shutting down...")
+        await close_ollama_http_client()
 
 
 app = FastAPI(
@@ -81,7 +98,45 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow React dev server on port 5173
+# ── Blanket API-key gate ─────────────────────────────────────────────────────
+# Every other router (chat/rag/ingest/confluence/models/vector/admin/dashboard/
+# v2/v3) was built with zero authentication, on the assumption LAKO only ever
+# runs local-only. That assumption breaks the moment anything (a tunnel, a
+# reverse proxy) forwards traffic from outside this machine. This middleware
+# requires ANY valid, active API key (services/api_key_manager.py, unchanged)
+# for every /api/* request except the paths below — everything else (root
+# status, health, Postman collection, /mcp, /api/gateway/*) already handles
+# its own access story and is left alone. Individual routers still layer a
+# stricter "admin"-permission check on top for genuinely destructive
+# endpoints (see services/auth_deps.py) — this middleware only proves *some*
+# valid key was presented, not that it has the right permission tier.
+_EXEMPT_PREFIXES = ("/mcp", "/api/gateway")
+_EXEMPT_PATHS = {"/api/v2/health", "/api/v2/ready"}
+
+
+@app.middleware("http")
+async def _require_any_api_key(request: Request, call_next):
+    path = request.url.path
+    if (
+        not path.startswith("/api/")
+        or path in _EXEMPT_PATHS
+        or any(path.startswith(p) for p in _EXEMPT_PREFIXES)
+    ):
+        return await call_next(request)
+
+    api_key = request.headers.get("x-api-key")
+    if not api_key_manager.validate_key(api_key):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing X-API-Key header."},
+        )
+    return await call_next(request)
+
+
+# CORS — allow React dev server on port 5173. Registered AFTER the auth
+# middleware above so it ends up outermost (Starlette applies middleware in
+# reverse registration order) and can still handle CORS preflight (OPTIONS)
+# requests before they'd hit the auth check.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -103,7 +158,17 @@ app.include_router(dashboard.router,  prefix="/api", tags=["Dashboard"])
 app.include_router(ingest_v2.router,  prefix="/api", tags=["V2 Ingestion"])
 app.include_router(health_v2.router,  prefix="/api", tags=["V2 Health"])
 app.include_router(rag_v2.router,     prefix="/api", tags=["V2 RAG"])
-app.include_router(ingest_v3.router,  prefix="/api", tags=["V3 Ingestion"])
+app.include_router(ingest_v3.router,     prefix="/api", tags=["V3 Ingestion"])
+app.include_router(confluence_v3.router, prefix="/api", tags=["V3 Confluence"])
+
+# MCP server (Streamable HTTP) — external tool-calling clients (e.g. Pega).
+# mcp_server.app already has streamable_http_path="/", so this mount avoids
+# the /mcp/mcp double-segment bug. Note the real reachable endpoint is
+# /mcp/ WITH a trailing slash — Starlette 307-redirects bare /mcp to /mcp/,
+# and not every HTTP client/connector follows a redirect on a POST. Give
+# external integrators (e.g. a Pega REST/MCP connector) the /mcp/ URL
+# directly rather than relying on redirect-following.
+app.mount("/mcp", mcp_server.app)
 
 
 @app.get("/", tags=["Health"])

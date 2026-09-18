@@ -178,6 +178,7 @@ function ActivityTable({ activity, t }) {
             <th className="pb-2 pr-4 font-medium">{t('dashboard.colType')}</th>
             <th className="pb-2 pr-4 font-medium">{t('dashboard.colTitle')}</th>
             <th className="pb-2 pr-4 font-medium text-right">{t('dashboard.colChunks')}</th>
+            <th className="pb-2 pr-4 font-medium text-right">{t('dashboard.colSize')}</th>
             <th className="pb-2 pr-4 font-medium">{t('dashboard.colStatus')}</th>
             <th className="pb-2 pr-4 font-medium text-right">{t('dashboard.colDuration')}</th>
             <th className="pb-2 font-medium text-right">{t('dashboard.colTime')}</th>
@@ -205,6 +206,9 @@ function ActivityTable({ activity, t }) {
               </td>
               <td className="py-2.5 pr-4 text-right text-gray-400 tabular-nums">
                 {entry.chunks_indexed}
+              </td>
+              <td className="py-2.5 pr-4 text-right text-gray-400 text-xs tabular-nums whitespace-nowrap">
+                {entry.file_size_mb != null ? `${entry.file_size_mb} MB` : '—'}
               </td>
               <td className="py-2.5 pr-4">
                 {entry.status === 'success' ? (

@@ -47,6 +47,7 @@
     "colType":                "Type",
     "colTitle":               "Title",
     "colChunks":              "Chunks / Pages",
+    "colSize":                "Size",
     "colStatus":              "Status",
     "colDuration":            "Time Consumed",
     "colTime":                "Time",
@@ -189,6 +190,28 @@
       "embedderReady": "Embedder",
       "unavailable":   "V2 backend unavailable"
     }
+  },
+  "cfV3": {
+    "title":            "V3 Confluence Ingestion (Qdrant)",
+    "subtitle":         "Fetch root page + all sub-pages → embed into the shared Qdrant knowledge base.",
+    "emailLabel":       "Atlassian Account Email (Cloud auth)",
+    "emailPlaceholder": "you@yourcompany.com",
+    "crawlSubpages":    "Crawl sub-pages recursively",
+    "ingestButton":     "Ingest into V3 Index",
+    "queuing":          "Queuing job…",
+    "crawling":         "Discovering pages…",
+    "processingPage":   "Indexing {{title}} ({{done}}/{{total}})",
+    "done":             "Complete — {{pages}} pages, {{chunks}} chunks indexed",
+    "pagesLabel":       "pages done",
+    "pagesSkipped":     "page(s) skipped with errors",
+    "successMsg":       "Indexed {{pages}} page(s) — {{chunks}} chunks added to Qdrant",
+    "tokenLabel":       "Atlassian API Token (required)",
+    "tokenHint":        "Generate at: id.atlassian.com → Security → API tokens",
+    "authTypeLabel":    "Token Type",
+    "authBearer":       "OAuth / Bearer (apps & scoped tokens)",
+    "authBasic":        "Classic API Token (Basic auth)",
+    "authBearerHint":   "Use this for OAuth app tokens with scopes (e.g. LAKOIntegration)",
+    "authBasicHint":    "Use this for classic API tokens from id.atlassian.com → Security → API tokens"
   },
   "common": {
     "loading":     "Loading...",

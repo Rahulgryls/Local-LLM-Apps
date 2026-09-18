@@ -19,7 +19,7 @@ from retrieval.models import AssembledContext, PageContent
 
 logger = structlog.get_logger(__name__)
 
-MAX_CONTEXT_TOKENS = 12_000     # safe limit for 20K num_ctx (leaves ~8K for output + system prompt)
+MAX_CONTEXT_TOKENS = 100_000    # safe limit for 128K num_ctx (leaves ~28K for output + system prompt)
 _TRUNCATION_CHARS  = 4_000      # chars to keep when truncating a direct-match page
 _CHARS_PER_TOKEN   = 4          # rough estimate
 

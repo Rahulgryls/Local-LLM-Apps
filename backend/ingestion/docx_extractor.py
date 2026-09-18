@@ -52,7 +52,7 @@ _HEADING_PREFIXES = ("heading 1", "heading 2", "heading 3", "heading 4")
 
 def _is_heading(para) -> bool:
     """Return True if *para* uses any of the standard Heading styles."""
-    style_name = (para.style.name or "").lower()
+    style_name = (para.style.name if para.style else "").lower()
     return any(style_name.startswith(h) for h in _HEADING_PREFIXES)
 
 

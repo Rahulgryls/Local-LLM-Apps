@@ -29,24 +29,22 @@ async def get_stats():
     """
     config = get_config()
 
-    # ── Vector DB ─────────────────────────────────────────────────────────────
+    # ── Vector DB — ChromaDB V1 (legacy) ─────────────────────────────────────
     chroma_stats = chroma_client.get_stats()
     total_chunks = chroma_stats.get("total_chunks", 0)
 
-    # Count chunks by source (pdf vs confluence) by sampling all metadata.
-    # Only fetch if there's something in the collection.
-    pdf_chunks = 0
+    pdf_chunks        = 0
     confluence_chunks = 0
-    total_documents = 0
-    last_updated = None
+    total_documents   = 0
+    last_updated      = None
 
     if total_chunks > 0:
         try:
             all_docs = chroma_client.get_all_documents()
             seen_filenames: set = set()
             for doc in all_docs:
-                meta = doc.get("metadata", {})
-                source = meta.get("source", "pdf")  # default to pdf for older chunks
+                meta   = doc.get("metadata", {})
+                source = meta.get("source", "pdf")
                 if source == "confluence":
                     confluence_chunks += 1
                 else:
@@ -62,6 +60,55 @@ async def get_stats():
         except Exception:
             pdf_chunks = total_chunks
             confluence_chunks = 0
+
+    # ── Vector DB — Qdrant V3 (lako_documents: PDFs, DOCX, Confluence V3) ────
+    v3_total_chunks      = 0
+    v3_confluence_chunks = 0
+    v3_doc_chunks        = 0
+    v3_documents         = 0
+    try:
+        from ingestion.embedder_v2 import _get_qdrant
+        qdrant = await _get_qdrant()
+        collections = {c.name for c in (await qdrant.get_collections()).collections}
+        if "lako_documents" in collections:
+            info = await qdrant.get_collection("lako_documents")
+            v3_total_chunks = info.points_count or 0
+
+            # Count confluence vs document chunks by scrolling payload
+            # Use count API with filter for efficiency
+            from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+            conf_result = await qdrant.count(
+                collection_name="lako_documents",
+                count_filter=Filter(
+                    must=[FieldCondition(
+                        key="source_type", match=MatchValue(value="confluence")
+                    )]
+                ),
+                exact=True,
+            )
+            v3_confluence_chunks = conf_result.count
+            v3_doc_chunks        = v3_total_chunks - v3_confluence_chunks
+
+            # Count unique doc_ids via SQLite (fast, no scroll needed)
+            from db.chunk_store import init_chunk_db
+            import aiosqlite
+            from pathlib import Path as _Path
+            _db = _Path(__file__).parent.parent.parent / "storage" / "lako.db"
+            if _db.exists():
+                async with aiosqlite.connect(_db) as db:
+                    async with db.execute(
+                        "SELECT COUNT(*) FROM documents WHERE status='indexed'"
+                    ) as cur:
+                        row = await cur.fetchone()
+                        v3_documents = row[0] if row else 0
+    except Exception:
+        pass
+
+    # Merge V1 + V3 totals for top-level cards
+    total_chunks    += v3_total_chunks
+    confluence_chunks += v3_confluence_chunks
+    pdf_chunks        += v3_doc_chunks
+    total_documents   += v3_documents
 
     # ── Ollama ────────────────────────────────────────────────────────────────
     ollama_reachable = await ollama_client.health_check()

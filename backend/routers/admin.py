@@ -2,10 +2,11 @@
 LAKO — Admin Router
 API key management endpoints for internal administrators.
 
-⚠️  PRODUCTION NOTE: These endpoints have NO authentication.
-    In production, firewall these at the network layer so only localhost
-    or the admin VLAN can reach /api/admin/*. They should never be
-    exposed to the public internet or to regular bank staff.
+All endpoints require an "admin"-permission X-API-Key — minting/listing/
+revoking/deleting keys is the one action that must never be reachable
+without already holding a trusted key (otherwise it's a full auth-bypass:
+anyone could just call POST /admin/keys first to self-issue access to
+everything else). See services/auth_deps.py.
 
 Session 10: Full implementation.
 """
@@ -13,12 +14,13 @@ Session 10: Full implementation.
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from services.api_key_manager import api_key_manager
+from services.auth_deps import require_permission
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_permission("admin"))])
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class CreateKeyRequest(BaseModel):
     name: str
-    permissions: List[str] = ["query"]   # "query" | "ingest"
+    permissions: List[str] = ["query"]   # "query" | "ingest" | "admin"
 
 
 class CreateKeyResponse(BaseModel):
@@ -57,10 +59,12 @@ async def create_key(request: CreateKeyRequest):
     If lost, the key must be deleted and a new one generated.
 
     Permissions:
-      "query"  — allows POST /api/gateway/query
-      "ingest" — allows POST /api/gateway/ingest/*
+      "query"  — allows POST /api/gateway/query, and read-only /api/* access
+      "ingest" — allows POST /api/gateway/ingest/*, and ingest-type /api/* access
+      "admin"  — key management (this router), config writes, destructive
+                 operations (vector DB clear, V2/V3 reindex/clear, document delete)
     """
-    valid_perms = {"query", "ingest"}
+    valid_perms = {"query", "ingest", "admin"}
     invalid = set(request.permissions) - valid_perms
     if invalid:
         raise HTTPException(

@@ -21,7 +21,11 @@ frontend/.vite/
 # Storage — never commit data or DB
 storage/chromadb/*
 storage/uploads/*
+storage/uploads_v3/*
+storage/uploads_mcp/*
 storage/lako_v2.db
+storage/lako.db
+storage/lako_sessions.db
 storage/activity_log.json
 !storage/chromadb/.gitkeep
 !storage/uploads/.gitkeep
@@ -44,3 +48,8 @@ Thumbs.db
 # Logs
 *.log
 uvicorn*.log
+
+# Local document store + vector DB — user data, never commit
+storage/documents/
+storage/qdrant/
+storage/file_registry.json

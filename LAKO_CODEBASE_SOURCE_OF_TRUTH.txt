@@ -1,0 +1,1440 @@
+================================================================================
+LAKO — LOCAL AI KNOWLEDGE ORCHESTRATOR
+COMPLETE CODEBASE SOURCE OF TRUTH
+Generated: 2026-04-29
+================================================================================
+
+TABLE OF CONTENTS
+─────────────────
+1.  SYSTEM OVERVIEW & ARCHITECTURE
+2.  CONFIGURATION
+3.  BACKEND — ENTRY POINT (main.py)
+4.  BACKEND — CONFIG LOADER (config.py)
+5.  BACKEND — DATABASE LAYER
+    5a. document_store.py  (V2 SQLite: documents, pages, page_summaries)
+    5b. chunk_store.py     (V3 SQLite: documents, document_chunks)
+6.  BACKEND — INGESTION PIPELINE
+    6a. orchestrator.py    (V2 pipeline entry point)
+    6b. pdf_extractor.py   (V2 PDF extraction, Pass 1)
+    6c. pptx_extractor.py  (V2 PPTX extraction, Pass 1)
+    6d. docx_extractor.py  (V2 DOCX extraction, Pass 1)
+    6e. summarizer.py      (V2 LLM page summarisation, Pass 2)
+    6f. embedder_v2.py     (V2 Qdrant embedding, Pass 3)
+    6g. service.py         (V3 Direct-RAG pipeline)
+    6h. docx_pipeline.py   (V3 DOCX + HTML pipelines)
+    6i. pptx_pipeline.py   (V3 PPTX pipeline)
+    6j. xlsx_pipeline.py   (V3 XLSX pipeline)
+7.  BACKEND — RETRIEVAL SYSTEM
+    7a. searcher.py        (Vector search + MMR diversity)
+    7b. context_fetcher.py (Page fetch + buffer windows)
+    7c. budget_manager.py  (Token budget trimming)
+    7d. prompt_builder.py  (Prompt assembly)
+    7e. models.py          (Pydantic models)
+    7f. web_searcher.py    (SearXNG web search)
+8.  BACKEND — ROUTERS (API Endpoints)
+    8a. rag_v2.py          (POST /api/v2/query — main RAG endpoint)
+    8b. ingest_v2.py       (V2 document ingestion)
+    8c. ingest_v3.py       (V3 document ingestion)
+    8d. confluence_v3.py   (Confluence V3 ingestion)
+    8e. health_v2.py       (Health, readiness, reindex)
+    8f. dashboard.py       (Dashboard stats)
+9.  BACKEND — SERVICES
+    9a. ollama_client.py   (Ollama API client)
+    9b. http_client.py     (Shared HTTP client)
+    9c. model_warmer.py    (Startup model warming)
+    9d. confluence_client.py (Confluence REST + HTML parser)
+10. FRONTEND — APP SHELL
+    10a. App.jsx           (Router + layout)
+    10b. appStore.js       (Zustand global state)
+11. FRONTEND — PAGES
+    11a. Chat.jsx          (Main chat UI)
+    11b. Dashboard.jsx     (System stats)
+    11c. DocumentIngestion.jsx
+12. FRONTEND — i18n
+    12a. en.json           (All English strings)
+13. API ENDPOINT REFERENCE
+14. DATA MODELS REFERENCE
+15. KEY DESIGN DECISIONS
+
+
+================================================================================
+SECTION 1 — SYSTEM OVERVIEW & ARCHITECTURE
+================================================================================
+
+WHAT IS LAKO?
+─────────────
+LAKO (Local AI Knowledge Orchestrator) is a fully on-premises AI knowledge
+platform built for Rabobank's internal use. It allows users to:
+  - Ingest PDF, DOCX, PPTX, XLSX, HTML, and Confluence pages into a local
+    vector database.
+  - Ask natural-language questions against those documents (RAG).
+  - Search the web via a self-hosted SearXNG instance.
+  - All AI inference runs locally via Ollama — no external API calls.
+
+STACK
+─────
+  Backend : FastAPI (Python 3.11), aiosqlite, qdrant-client, PyMuPDF,
+            pdfplumber, python-docx, python-pptx, openpyxl, BeautifulSoup4,
+            httpx, structlog
+  Frontend: React 18, Zustand, Tailwind CSS, Lucide icons, react-i18next
+  AI      : Ollama (local), qwen3.5:35b-a3b-coding-nvfp4 (LLM + vision),
+            nomic-embed-text (768-dim embeddings), qwen2.5:3b (summarisation)
+  Storage : Qdrant (embedded, no Docker), SQLite (two DBs), filesystem
+
+ARCHITECTURE — HIGH LEVEL
+─────────────────────────
+
+  Browser (React SPA)
+      │
+      ▼  HTTP / SSE
+  FastAPI Backend (port 8000)
+      │
+      ├── Ingestion routers (V2 + V3)
+      │       │
+      │       ├── File extractors → SQLite (lako_v2.db)
+      │       ├── LLM Summariser  → Ollama
+      │       └── Embedder        → Qdrant (storage/qdrant/)
+      │
+      ├── RAG router (/api/v2/query)
+      │       │
+      │       ├── Embedding cache → Ollama embed
+      │       ├── Dual Qdrant search (lako_page_summaries + lako_documents)
+      │       ├── MMR diversity pass
+      │       ├── Context fetcher (SQLite + Qdrant payload fallback)
+      │       ├── Budget manager (token trimming)
+      │       └── LLM stream → SSE → Browser
+      │
+      └── Dashboard / Settings / Health endpoints
+
+QDRANT COLLECTIONS
+──────────────────
+  lako_page_summaries  — V2 pipeline: stores LLM-generated summaries of each
+                         page (PDF/PPTX/DOCX). One point per page.
+                         Payload: doc_id, page_num, filename, source_type,
+                                  headers, has_tables, summary_text
+
+  lako_documents       — V3 pipeline + Confluence V3: stores raw text chunks
+                         directly (no summarisation pass).
+                         Payload: doc_id, source_id, filename, source_type,
+                                  block_type, page, url, text
+
+SQLITE DATABASES
+────────────────
+  storage/lako_v2.db  — V2 pipeline
+    Tables: documents, pages, page_summaries
+
+  storage/lako.db     — V3 pipeline + Confluence V3
+    Tables: documents, document_chunks
+
+INGESTION PIPELINES
+───────────────────
+  V2 Pipeline (PDF, PPTX, DOCX via /api/v2/ingest):
+    Pass 1: Structure extraction → SQLite pages table
+    Pass 2: LLM page summarisation (qwen2.5:3b) → page_summaries table
+    Pass 3: Embed summaries (nomic-embed-text) → lako_page_summaries Qdrant
+
+  V3 Pipeline (PDF, DOCX, PPTX, XLSX, HTML via /api/v3/ingest):
+    Pass 1: Per-page classifier (TEXT_RICH / TABLE / IMAGE_ONLY / MIXED)
+    Pass 2: Extract text / flatten tables / vision-describe images
+    Pass 3: smart_chunk() → 400-token sentence-boundary chunks
+    Pass 4: Embed chunks → lako_documents Qdrant
+
+  Confluence V3 Pipeline (via /api/v3/ingest/confluence):
+    Crawl: BFS from root page, collect all child page IDs
+    Per-page: Fetch HTML → BeautifulSoup parse → text/table/code chunks
+    Embed: nomic-embed-text → lako_documents Qdrant
+
+RAG QUERY PIPELINE
+──────────────────
+  POST /api/v2/query
+    1. Cache check (LRU-50, 1-hour TTL)
+    2. Embed query with nomic-embed-text (embedding cache)
+    3. Dual Qdrant search: lako_page_summaries + lako_documents
+       (limit = top_k × 5 per collection for MMR oversampling)
+    4. Merge results, sort by score descending
+    5. MMR diversity pass:
+       - Pass 1: Guarantee max(1, top_k//num_docs) slots per doc (threshold-free)
+       - Pass 2: Fill remaining slots meeting score_threshold, per-doc cap
+    6. Context fetch: get raw page text from SQLite (or Qdrant payload for V3)
+       with optional ±buffer_pages neighbours
+    7. Budget trim to 12,000 token limit:
+       - Drop buffer pages low-score first
+       - Drop all buffers
+       - Truncate lowest-scored direct matches to 4000 chars
+    8. Build prompt: pages grouped by doc, wrapped in === delimiters
+    9. Stream LLM response via SSE
+    10. Cache response async
+
+DOCUMENT DEDUPLICATION
+──────────────────────
+  Both V2 and V3 use SHA-256 content hashing.
+  If hash matches an existing ready/indexed doc → skip, return existing doc_id.
+  If same filename but different hash → "ingest-first, swap-after":
+    New doc is fully indexed before old doc is evicted from Qdrant + SQLite.
+    This ensures zero downtime during document updates.
+
+FRONTEND STATE
+──────────────
+  Zustand store (appStore.js) holds:
+    - Chat messages, ragMode, selectedDocId, showDebug (persists across
+      navigation — chat history survives page switches)
+    - Model names, vector stats, ingestion status, settings
+
+  Ephemeral state (local useState in Chat):
+    - Loading/streaming flags, input prompt, scroll state
+
+
+================================================================================
+SECTION 2 — CONFIGURATION
+================================================================================
+
+File: config/config.json
+Note: confluence_token is a real API token — redacted in this document.
+
+{
+  "ollama_url": "http://localhost:11434",
+  "primary_model": "qwen3.5:35b-a3b-coding-nvfp4",
+  "vision_model": "qwen3.5:35b-a3b-coding-nvfp4",
+  "embedding_model": "nomic-embed-text",
+  "summarization_model": "qwen2.5:3b",
+  "chromadb_path": "/Users/rahul/lako/storage/chromadb",
+  "confluence_url": "https://yourbank.atlassian.net",
+  "confluence_email": "[REDACTED]",
+  "confluence_token": "[REDACTED]",
+  "top_k": 8,
+  "similarity_threshold": 0.25,
+  "api_key": "",
+  "searxng_url": "http://localhost:8080",
+  "api_keys_path": "/Users/rahul/lako/storage/api_keys.json",
+  "gateway_enabled": true,
+  "ollama_runtime": {
+    "num_ctx": 20480,
+    "num_predict": 3000,
+    "repeat_penalty": 1.1,
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "keep_alive": -1,
+    "think": false
+  }
+}
+
+Key config fields:
+  top_k                — Max results after MMR diversity (default 8)
+  similarity_threshold — Min cosine similarity for fill slots (default 0.25)
+  summarization_model  — Small fast model for Pass 2 summarisation (qwen2.5:3b)
+  primary_model        — Main LLM for RAG answers and vision
+  ollama_runtime.think — Set false to disable Qwen3 thinking mode (faster)
+  ollama_runtime.num_ctx — Context window (20480 tokens)
+
+
+================================================================================
+SECTION 3 — BACKEND ENTRY POINT
+================================================================================
+
+File: backend/main.py
+
+FastAPI application entry point.
+- Registers all routers with /api prefix
+- Lifespan: warms up LLM + embedder on startup via model_warmer
+- CORS: allows React dev server on localhost:5173
+- Routes:
+    /api    — all API routers
+    /health — legacy health check (ChromaDB + Ollama version + cache size)
+    /postman — download Postman collection JSON
+
+Router registration order:
+  chat, rag, ingest, confluence, models, vector, gateway, admin, dashboard
+  ingest_v2, health_v2, rag_v2
+  ingest_v3, confluence_v3
+
+
+================================================================================
+SECTION 4 — CONFIG LOADER
+================================================================================
+
+File: backend/config.py
+
+Functions:
+  get_config() -> dict
+    Loads config/config.json, merges with _DEFAULT_CONFIG.
+    @lru_cache(maxsize=1) — cached after first read.
+
+  reload_config() -> dict
+    Clears cache and reloads from disk. Called after POST /api/config.
+
+  get_ollama_runtime_options() -> dict
+    Returns {"options": {num_ctx, num_predict, repeat_penalty, temperature, top_p},
+             "keep_alive": -1, "think": False}
+    Merges config.json's ollama_runtime with hardcoded defaults.
+
+  save_config(data: dict) -> dict
+    Merges data into config.json, persists to disk, reloads cache.
+
+Default values:
+  primary_model: "qwen3.5:35b-a3b-coding-nvfp4"
+  embedding_model: "nomic-embed-text"
+  top_k: 5, similarity_threshold: 0.7
+  num_ctx: 20480, num_predict: 1500
+
+
+================================================================================
+SECTION 5 — DATABASE LAYER
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+5a. backend/db/document_store.py  (V2 SQLite — lako_v2.db)
+────────────────────────────────────────────────────────────────────────────────
+
+Database path: storage/lako_v2.db
+All I/O async via aiosqlite.
+
+SCHEMA:
+  documents (
+    doc_id      TEXT PRIMARY KEY,
+    filename    TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    total_pages INTEGER,
+    file_hash   TEXT,
+    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status      TEXT DEFAULT 'processing'
+  )
+  Status lifecycle: processing → extracting → summarizing → embedding → ready
+                                                                       ↘ failed
+
+  pages (
+    id         INTEGER PK AUTOINCREMENT,
+    doc_id     TEXT NOT NULL REFERENCES documents(doc_id),
+    page_num   INTEGER NOT NULL,
+    raw_text   TEXT NOT NULL,
+    headers    TEXT DEFAULT '[]',   -- JSON array of header strings
+    has_tables BOOLEAN DEFAULT FALSE,
+    char_count INTEGER,
+    UNIQUE(doc_id, page_num)
+  )
+
+  page_summaries (
+    id           INTEGER PK AUTOINCREMENT,
+    doc_id       TEXT NOT NULL,
+    page_num     INTEGER NOT NULL,
+    summary_text TEXT NOT NULL,
+    embedded     BOOLEAN DEFAULT FALSE,
+    UNIQUE(doc_id, page_num)
+  )
+
+Indexes: idx_pages_doc_id, idx_summaries_doc_id, idx_documents_hash
+
+KEY FUNCTIONS:
+  init_db()                              — Create tables/indexes
+  create_document(doc_id, filename, source_type, file_hash)
+  update_document_status(doc_id, status, total_pages=None)
+  get_document(doc_id) -> Optional[dict]
+  find_document_by_filename(filename) -> Optional[dict]  -- most recent ready
+  delete_document_all_data(doc_id)       -- cascade delete pages + summaries
+  get_document_by_hash(file_hash) -> Optional[dict]
+  insert_page(doc_id, page_num, raw_text, headers, has_tables, char_count)
+  get_page_by_num(doc_id, page_num) -> Optional[dict]
+  get_pages(doc_id) -> list[dict]        -- ordered by page_num
+  insert_page_summary(doc_id, page_num, summary_text)
+  mark_page_embedded(doc_id, page_num)
+  get_unembedded_summaries(doc_id) -> list[dict]
+  reset_embedded_flag(doc_id)
+  reset_all_embedded_flags()
+  get_all_ready_documents() -> list[dict]
+  clear_all_documents() -> int           -- returns count deleted
+
+────────────────────────────────────────────────────────────────────────────────
+5b. backend/db/chunk_store.py  (V3 SQLite — lako.db)
+────────────────────────────────────────────────────────────────────────────────
+
+Database path: storage/lako.db
+Separate from V2. Used by V3 direct-RAG pipeline and Confluence V3.
+
+SCHEMA:
+  documents (
+    id            TEXT PRIMARY KEY,
+    filename      TEXT,
+    hash          TEXT UNIQUE,
+    source_type   TEXT,
+    source_id     TEXT,        -- stable external ID, e.g. "confluence:5210370"
+    status        TEXT DEFAULT 'pending',   -- pending|processing|parsing|embedding|indexed|failed
+    chunk_count   INTEGER DEFAULT 0,
+    page_count    INTEGER DEFAULT 0,
+    ingested_at   TEXT,
+    indexed_at    TEXT,
+    error_message TEXT
+  )
+
+  document_chunks (
+    id          TEXT PRIMARY KEY,
+    doc_id      TEXT REFERENCES documents(id),
+    page        INTEGER,
+    block_type  TEXT,          -- text|table|image_description
+    chunk_index INTEGER,
+    qdrant_id   TEXT,          -- UUID of corresponding Qdrant point
+    created_at  TEXT
+  )
+
+Indexes: idx_chunks_doc_id, idx_docs_hash, idx_docs_source_id
+
+KEY FUNCTIONS:
+  init_chunk_db()                        -- includes migration for source_id column
+  find_by_hash(file_hash) -> Optional[dict]
+  find_by_source_id(source_id) -> Optional[dict]  -- for Confluence dedup
+  find_by_filename(filename) -> Optional[dict]
+  create_doc(doc_id, filename, file_hash, source_type, source_id=None)
+  update_doc_status(doc_id, status, chunk_count, page_count, error_message)
+  insert_chunk(chunk_id, doc_id, page, block_type, chunk_index, qdrant_id)
+  get_chunk_qdrant_ids(doc_id) -> list[str]
+  delete_doc_and_chunks(doc_id)
+  get_doc(doc_id) -> Optional[dict]
+  get_chunks_for_doc(doc_id) -> list[dict]
+
+
+================================================================================
+SECTION 6 — INGESTION PIPELINE
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+6a. backend/ingestion/orchestrator.py  (V2 Pipeline Orchestrator)
+────────────────────────────────────────────────────────────────────────────────
+
+Entry point for all V2 document ingestion (PDF, PPTX, DOCX).
+Called by ingest_v2 router via BackgroundTasks.
+
+FUNCTION: ingest_document(file_path, source_type, progress_callback, original_filename) -> str
+  Returns doc_id.
+
+FLOW:
+  1. SHA-256 hash → deduplicate (if identical content exists as "ready", return existing doc_id)
+  2. Check for same filename (prev doc) — store reference but do NOT delete yet
+  3. Create documents row (status=processing)
+  4. Pass 1 — extraction:
+       pdf  → extract_pdf()   (PyMuPDF + pdfplumber for tables)
+       pptx → extract_pptx()  (python-pptx)
+       docx → extract_docx()  (python-docx)
+     Results stored in SQLite pages table.
+  5. Pass 2 — summarisation (batch_size=1 for reliability):
+       For each page: summarize_page() → LLM call → stored in page_summaries
+  6. Pass 3 — embedding:
+       ensure_collection() → _embed_all_summaries_for_doc()
+       → embed each summary → upsert to lako_page_summaries Qdrant
+  7. status = ready
+  8. Evict old doc (if prev): delete old Qdrant vectors + old SQLite rows
+
+PROGRESS CALLBACK: fn(doc_id, phase, current, total)
+  Phases: "extracting", "summarizing", "embedding"
+
+SUPPORTED EXTENSIONS: .pdf, .pptx, .docx
+
+────────────────────────────────────────────────────────────────────────────────
+6b. backend/ingestion/pdf_extractor.py  (V2 PDF Extraction)
+────────────────────────────────────────────────────────────────────────────────
+
+Uses PyMuPDF (fitz) as primary extractor.
+Uses pdfplumber as targeted secondary pass for table pages only.
+
+TABLE DETECTION HEURISTIC (avoids calling pdfplumber on every page):
+  _looks_like_table_page(text) returns True if:
+    - Line has 2+ pipe chars (|)
+    - Line has 2+ consecutive tab chars
+    - Line has 3+ short tokens separated by 2+ spaces (column-like layout)
+  Only if heuristic fires → pdfplumber called to confirm and extract table.
+
+HEADER DETECTION (_extract_headers):
+  Uses PyMuPDF font-size analysis.
+  Spans > avg_size + 1.5pt above average → treated as headers.
+  Capped at 10 headers per page.
+
+SCANNED PAGES (< 50 chars text):
+  Render page to PNG at 2× zoom (144 DPI) → vision model OCR.
+
+FUNCTION: extract_pdf(file_path, doc_id, progress_callback) -> int (total pages)
+
+────────────────────────────────────────────────────────────────────────────────
+6c. backend/ingestion/pptx_extractor.py  (V2 PPTX Extraction)
+────────────────────────────────────────────────────────────────────────────────
+
+Uses python-pptx. Each slide = one "page" in SQLite.
+Extracts: text frames, speaker notes, title placeholders (→ headers).
+Visual shapes (PICTURE, CHART, OLE, GROUP) flagged but not processed (deferred).
+No LLM calls — pure deterministic extraction.
+
+FUNCTION: extract_pptx(file_path, doc_id, progress_callback) -> int (total slides)
+
+────────────────────────────────────────────────────────────────────────────────
+6d. backend/ingestion/docx_extractor.py  (V2 DOCX Extraction)
+────────────────────────────────────────────────────────────────────────────────
+
+Splits Word document into virtual "pages" at heading boundaries (H1–H4).
+Sections > 5000 chars split at paragraph boundaries.
+
+TABLE HANDLING: _flatten_table()
+  First row = headers. Subsequent rows formatted as:
+    "Header1: Val1 | Header2: Val2"
+  Tables get their own virtual page (flushed before + after table).
+
+IMAGE HANDLING: _vision_describe()
+  Embedded images extracted via doc.part.rels
+  Image bytes → base64 → vision model → text description appended as final pages.
+  Tiny images (< 500 bytes) skipped.
+
+FUNCTION: extract_docx(file_path, doc_id, progress_callback) -> int (virtual pages)
+
+────────────────────────────────────────────────────────────────────────────────
+6e. backend/ingestion/summarizer.py  (V2 LLM Summarisation)
+────────────────────────────────────────────────────────────────────────────────
+
+Generates 2–3 sentence summary per page using LLM.
+Uses summarization_model (qwen2.5:3b) or falls back to primary_model.
+
+EDGE CASES:
+  Empty page (< 50 chars)  → stored as "[Empty page]"
+  Page > 6000 chars        → truncated before sending, "(truncated)" appended
+  LLM timeout/error        → one retry, then "[Summarization failed]"
+
+PROMPT TEMPLATE:
+  "Summarize this page in 2-3 sentences.
+   Preserve: key entities, numbers, policy names, decisions, relationships.
+   Be specific — use names, dates, and figures from the text.
+   Document: {doc_name}, Page {page_num} of {total_pages}
+   Headers: {headers_str}
+   ---
+   {raw_text}"
+
+_clean_summary(): strips echoed page headers/separators, hard-caps at 1500 chars.
+
+BATCH SUMMARISATION (summarize_batch):
+  Groups up to 3 pages per LLM call using ---PAGE_BREAK--- separator.
+  Current batch_size = 1 (reliability mode; batch logic preserved for future).
+
+FUNCTIONS:
+  summarize_page(doc_id, page_num, raw_text, headers, doc_name, total_pages) -> str
+  summarize_batch(pages: list[dict]) -> list[str]
+
+────────────────────────────────────────────────────────────────────────────────
+6f. backend/ingestion/embedder_v2.py  (V2 Qdrant Embedding)
+────────────────────────────────────────────────────────────────────────────────
+
+Embeds page summaries via nomic-embed-text and upserts to Qdrant.
+
+COLLECTION: lako_page_summaries
+VECTOR_SIZE: 768 (nomic-embed-text output dimension)
+DISTANCE: COSINE
+STORAGE: storage/qdrant/ (embedded Qdrant, no Docker)
+
+POINT ID: Deterministic uuid5(NAMESPACE_DNS, f"{doc_id}:{page_num}")
+  → re-runs are safe upserts, not duplicates.
+
+QDRANT POINT PAYLOAD:
+  doc_id, page_num, filename, source_type,
+  headers (pipe-joined string), has_tables (bool), summary_text
+
+FUNCTIONS:
+  _get_qdrant() -> AsyncQdrantClient  (singleton, lazy init)
+  ensure_collection()                  -- create if missing
+  embed_and_upsert(doc_id, page_num, filename, source_type, headers,
+                   has_tables, summary_text)
+  _embed_all_summaries_for_doc(doc_id, filename, source_type,
+                               progress_callback) -> int (count)
+  reindex_document(doc_id)            -- delete vectors + re-summarise + re-embed
+  reindex_all() -> int                -- rebuild entire collection from SQLite summaries
+  collection_stats() -> dict          -- {status, points_count, vectors_count, collection}
+
+────────────────────────────────────────────────────────────────────────────────
+6g. backend/ingestion/service.py  (V3 Direct-RAG Pipeline)
+────────────────────────────────────────────────────────────────────────────────
+
+No LLM summarisation — raw text preserved exactly.
+Vision model called only for IMAGE_ONLY pages and MIXED image regions.
+
+COLLECTION: lako_documents
+VECTOR_SIZE: 768
+
+PAGE CLASSIFIER (_classify_page):
+  TEXT_RICH  : token_count >= 50 (sentence-boundary chunking)
+  TABLE      : _looks_like_table() triggered at any token count
+  IMAGE_ONLY : token_count < 20 AND has images (render + vision)
+  MIXED      : token_count >= 20 AND has images (text direct + vision per image)
+
+SMART CHUNKING (smart_chunk):
+  Split text on sentence boundaries (". ", "? ", "! ", "\n\n").
+  Max 400 tokens per chunk (whitespace-split words).
+  50-token overlap carry-over between chunks.
+  Tables: always kept as single chunk (never split).
+  Returns list of (chunk_text, metadata_copy).
+
+PDF PAGE PROCESSING (_process_pdf_page):
+  TEXT_RICH  → smart_chunk(raw_text, meta{block_type="text"})
+  TABLE      → pdfplumber flatten → smart_chunk(table_text, meta{block_type="table"})
+               fallback to text if pdfplumber finds no table
+  IMAGE_ONLY → render page PNG @ 150dpi → vision_call() → single chunk
+  MIXED      → text chunks + vision call per image rect (skip if < 50×50 px)
+
+EMBED AND STORE (_embed_and_store):
+  For each chunk: embed text → upsert Qdrant point → insert SQLite chunk row.
+  Qdrant point payload: all metadata + "text": chunk_text.
+  One bad chunk does not abort the document (continue on error).
+
+INGEST FLOW (ingest_file):
+  Stage 1: SHA-256 hash dedup
+  Stage 1b: Find prev by filename (ingest-first, swap-after)
+  Stage 2: Route to correct pipeline (pdf/docx/pptx/xlsx/html)
+  Stage 3: Parse → list of (text, metadata) tuples
+  Stage 4: Copy original file to storage/documents/{doc_id}/original.{ext}
+  Stage 5: _ensure_collection() → _embed_and_store()
+  Stage 6: Evict old doc (if prev) after new is verified (chunk_count > 0)
+
+SUPPORTED TYPES: pdf | docx | pptx | xlsx | html
+
+FUNCTIONS:
+  smart_chunk(text, page, metadata, max_tokens=400, overlap=50) -> list[(str, dict)]
+  ingest_file(file_path, filename, source_type, progress_callback) -> dict
+    Returns: {"doc_id", "status": "duplicate"|"indexed"|"replaced", "chunks", "pages"}
+  source_type_from_filename(filename) -> str
+
+────────────────────────────────────────────────────────────────────────────────
+6h. backend/ingestion/docx_pipeline.py  (V3 DOCX + HTML)
+────────────────────────────────────────────────────────────────────────────────
+
+DOCX PIPELINE (docx_pipeline):
+  Walks doc.element.body to see paragraphs AND tables in document order.
+  Sections split at heading styles ("Heading 1"-"Heading 4").
+  Tables flattened to "Col: Val | Col: Val" rows → block_type="table".
+  Embedded images extracted from doc.part.rels → vision model → appended.
+
+HTML PIPELINE (html_pipeline):
+  Used for Confluence HTML export files.
+  BeautifulSoup parse → headings / tables / paragraphs / lists.
+  Tables: flatten rows using header row as keys.
+  Min 5 tokens per chunk (shorter text discarded).
+
+────────────────────────────────────────────────────────────────────────────────
+6i. backend/ingestion/pptx_pipeline.py  (V3 PPTX)
+────────────────────────────────────────────────────────────────────────────────
+
+Uses python-pptx. Each slide classified as TEXT_RICH/TABLE/IMAGE_ONLY/MIXED.
+Image-only slides rendered to PNG via LibreOffice (brew install libreoffice).
+LibreOffice not found → IMAGE_ONLY slides stored empty with warning.
+Speaker notes always extracted and appended to slide text.
+Tables flattened per slide shape to "Col: Val | Col: Val" rows.
+
+FUNCTION: pptx_pipeline(file_path, doc_id, filename, progress_callback) -> list[(str, dict)]
+
+────────────────────────────────────────────────────────────────────────────────
+6j. backend/ingestion/xlsx_pipeline.py  (V3 XLSX)
+────────────────────────────────────────────────────────────────────────────────
+
+Uses openpyxl (read_only=True, data_only=True).
+Each worksheet = one or more chunks (page number = worksheet position).
+Row 1 assumed to be headers. Data rows formatted as "Header: Val | Header: Val".
+Blank rows skipped. smart_chunk() applied to flattened text.
+block_type always "table".
+No LLM calls — pure deterministic extraction.
+
+FUNCTION: xlsx_pipeline(file_path, doc_id, filename, progress_callback) -> list[(str, dict)]
+
+
+================================================================================
+SECTION 7 — RETRIEVAL SYSTEM
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+7a. backend/retrieval/searcher.py
+────────────────────────────────────────────────────────────────────────────────
+
+DUAL-COLLECTION VECTOR SEARCH + MMR DIVERSITY
+
+COLLECTIONS SEARCHED:
+  lako_page_summaries — V2 pipeline (PDFs, PPTX, DOCX)
+  lako_documents      — V3 pipeline (Confluence, newer file uploads)
+
+FUNCTION: search_pages(query, top_k=5, score_threshold=0.3,
+                       doc_id_filter=None, source_type_filter=None,
+                       query_vector=None) -> list[SearchResult]
+
+FLOW:
+  1. Embed query (or use pre-computed query_vector)
+  2. Build optional Qdrant filter (doc_id and/or source_type)
+  3. Query lako_page_summaries with limit=top_k*5
+  4. Query lako_documents with limit=top_k*5 (if collection exists)
+  5. Merge all hits, sort by score descending
+  6. Apply MMR diversity → return up to top_k results
+
+MMR DIVERSITY ALGORITHM (_apply_mmr_diversity):
+
+  Purpose: Prevent one document from monopolising all slots when multiple
+  documents are indexed. Ensures minority-domain docs always contribute.
+
+  Inputs: hits (sorted score desc), top_k, score_threshold
+
+  Pass 1 — Guaranteed slots (THRESHOLD-FREE):
+    guarantee_per_doc = max(1, top_k // num_unique_docs)
+    Each unique document gets guarantee_per_doc slots unconditionally.
+    Example: top_k=8, 3 docs → 2 guaranteed slots per doc = 6 total guaranteed
+    These slots bypass score_threshold — the doc earned them by being indexed.
+
+  Pass 2 — Fill slots (THRESHOLD ENFORCED):
+    per_doc_cap = max(2, top_k // num_unique_docs)
+    Remaining slots (up to top_k) go to highest-scoring hits that:
+      a. Meet score_threshold
+      b. Have not exceeded per_doc_cap for their document
+    Stops when result list reaches top_k.
+
+  Final sort by score descending.
+
+SEARCH RESULT PAYLOAD NORMALISATION:
+  V2 points: payload uses "summary_text" key
+  V3 points: payload uses "text" key
+  Normalised to SearchResult.summary_text for both.
+
+────────────────────────────────────────────────────────────────────────────────
+7b. backend/retrieval/context_fetcher.py
+────────────────────────────────────────────────────────────────────────────────
+
+FUNCTION: fetch_context(search_results, buffer_pages=1) -> AssembledContext
+  (currently called with buffer_pages=0 in rag_v2.py)
+
+STRATEGY:
+  For each SearchResult at page N, fetch pages [N-buffer, N+buffer] clamped
+  to [1, doc.total_pages].
+
+  Deduplication: if a page appears in multiple windows:
+    - Keep single entry
+    - is_direct_match = True if it was directly returned by Qdrant
+    - score = max(all associated scores)
+
+  Sort all collected pages by (doc_id, page_num) for coherent reading order.
+
+V3/Confluence fallback:
+  V3 docs are NOT in lako_v2.db pages table.
+  Falls back to text carried in SearchResult.summary_text (from Qdrant payload).
+
+OUTPUT: AssembledContext
+  pages:        list[PageContent] sorted by (doc_id, page_num)
+  total_tokens: sum(len(raw_text)) // 4  (rough token estimate)
+  sources:      unique [{doc_id, filename, page_num, score}] list
+
+────────────────────────────────────────────────────────────────────────────────
+7c. backend/retrieval/budget_manager.py
+────────────────────────────────────────────────────────────────────────────────
+
+FUNCTION: apply_budget(assembled: AssembledContext) -> AssembledContext
+
+MAX_CONTEXT_TOKENS = 12,000  (safe for 20K num_ctx; leaves ~8K for output + system)
+_TRUNCATION_CHARS  = 4,000   (chars kept when truncating a direct-match page)
+_CHARS_PER_TOKEN   = 4       (rough estimate)
+
+TRIM STRATEGY (stops as soon as budget met):
+
+  Step 1 — Drop buffer pages lowest-score first:
+    Buffer pages sorted by score ascending.
+    Drop one at a time until within budget.
+    Direct-match pages untouched.
+
+  Step 2 — Drop ALL buffer pages:
+    If still over budget after Step 1, discard all remaining buffers.
+    Only direct-match pages remain.
+
+  Step 3 — Truncate lowest-scored direct-match pages:
+    Sort by score ascending.
+    For each page that would exceed budget: truncate to min(remaining_budget * 4, 4000) chars.
+    Append "\n[truncated]" marker.
+    Pages < 100 chars after truncation → skip entirely.
+    Direct-match pages are NEVER fully dropped.
+
+Sources list is preserved unchanged (citations never trimmed).
+
+────────────────────────────────────────────────────────────────────────────────
+7d. backend/retrieval/prompt_builder.py
+────────────────────────────────────────────────────────────────────────────────
+
+FUNCTION: build_query_prompt(query, context, language) -> (user_prompt, system_prompt)
+
+User prompt structure:
+  --- DOCUMENT PAGES ---
+  === {filename} — Page {page_num} ===
+  {raw_text}
+  === END PAGE ===
+  ...
+  --- END DOCUMENT PAGES ---
+  Question: {query}
+
+System prompts (EN / NL):
+  EN: "You are LAKO, Rabobank's internal knowledge assistant.
+       Answer based ONLY on the provided document pages below.
+       Rules:
+       - Cite sources as [Document: filename, Page: N]
+       - Synthesize across multiple documents
+       - Preserve exact figures from tables
+       - Respond in English"
+
+  NL: Dutch equivalent.
+
+FUNCTION: build_web_prompt(query, web_results, language) -> (user_prompt, system_prompt)
+  Formats SearXNG results as numbered list for LLM summarisation.
+
+────────────────────────────────────────────────────────────────────────────────
+7e. backend/retrieval/models.py  (Pydantic Models)
+────────────────────────────────────────────────────────────────────────────────
+
+SearchResult:
+  doc_id, page_num, filename, source_type, score (float),
+  summary_text, headers (pipe-joined str), has_tables (bool)
+
+PageContent:
+  doc_id, filename, page_num, raw_text,
+  is_direct_match (bool), score (float)
+
+AssembledContext:
+  pages: list[PageContent], total_tokens: int,
+  sources: list[dict]  -- [{doc_id, filename, page_num, score}]
+
+WebResult:
+  title, url, snippet
+
+QueryRequest:
+  query, language ("en"|"nl"), rag_enabled (bool), doc_id (Optional[str])
+
+QueryResponse (non-streaming):
+  answer, sources, language, rag_used
+
+────────────────────────────────────────────────────────────────────────────────
+7f. backend/retrieval/web_searcher.py
+────────────────────────────────────────────────────────────────────────────────
+
+Queries self-hosted SearXNG instance (searxng_url from config).
+Returns list[WebResult] with title, url, snippet.
+Used when rag_enabled=False in QueryRequest.
+
+
+================================================================================
+SECTION 8 — ROUTERS (API ENDPOINTS)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+8a. backend/routers/rag_v2.py  — POST /api/v2/query
+────────────────────────────────────────────────────────────────────────────────
+
+THE MAIN RAG ENDPOINT. Returns SSE streaming response.
+
+REQUEST BODY (JSON):
+  query        string  — Natural-language question
+  language     string  — "en" | "nl" (default "en")
+  rag_enabled  bool    — true=search docs, false=web search (default true)
+  doc_id       string? — Filter to single document (bypasses query cache)
+
+SSE RESPONSE FORMAT:
+  data: {"token": "<chunk>", "done": false}    — one per LLM token
+  data: {"token": "", "done": true, "sources": [...], "timing": {...}}  — final
+
+Sources (RAG mode): [{doc_id, filename, page_num, score}]
+Sources (web mode): [{title, url}]
+Error event:        {"token": "", "done": true, "error": "...", "sources": []}
+
+TIMING FIELDS (in final event):
+  embedding_ms, search_ms, fetch_ms, assembly_ms, llm_first_token_ms, llm_total_ms
+  OR {cache_hit: true} if served from cache.
+
+RAG PIPELINE (_stream_rag):
+  1. Query cache check (skip if doc_id filter active)
+  2. Embed query (embedding cache)
+  3. search_pages() → list[SearchResult]
+  4. fetch_context(buffer_pages=0) → AssembledContext
+  5. apply_budget() → trimmed context
+  6. build_query_prompt() → (user_prompt, system_prompt)
+  7. ollama_client.stream_chat() → token stream → SSE
+  8. Async cache store (non-blocking)
+
+WEB PIPELINE (_stream_web):
+  1. web_search() → list[WebResult]
+  2. build_web_prompt() → (user_prompt, system_prompt)
+  3. ollama_client.stream_chat() → SSE
+
+CACHES:
+  query_cache    — LRU-50, 1-hour TTL. Stores {response: str, sources: list}.
+                   Cleared on new document ingest.
+  embedding_cache — Caches query vectors. Avoids re-calling Ollama embed.
+
+────────────────────────────────────────────────────────────────────────────────
+8b. backend/routers/ingest_v2.py  — V2 Document Ingestion
+────────────────────────────────────────────────────────────────────────────────
+
+POST /api/v2/ingest
+  Upload PDF/PPTX/DOCX → start background ingestion.
+  Returns: {job_id, filename, status, message}
+  Poll: GET /api/v2/ingest/{job_id}/status
+
+GET /api/v2/ingest/{job_id}/status -> StatusResponse
+  {job_id, doc_id, filename, status, phase, pages_processed, total_pages, error}
+  Status: processing | ready | failed
+  Phase:  extracting | summarizing | embedding | complete | failed
+  Falls back to SQLite lookup if job_id not in memory (post-restart).
+
+GET /api/v2/documents -> DocumentListResponse
+  Returns all ready documents from SQLite.
+  {documents: [{doc_id, filename, source_type, total_pages, ingested_at}]}
+
+BACKGROUND TASK (_run_ingestion):
+  Drives orchestrator.ingest_document() with progress callback.
+  On complete: appends to activity_log, clears query_cache.
+  Cleans up staged upload file in finally block.
+
+────────────────────────────────────────────────────────────────────────────────
+8c. backend/routers/ingest_v3.py  — V3 Document Ingestion
+────────────────────────────────────────────────────────────────────────────────
+
+POST /api/v3/ingest
+  Upload PDF/DOCX/PPTX/XLSX/HTML → start background V3 ingestion.
+  Returns: {job_id, filename, status, message}
+
+GET /api/v3/ingest/{job_id}/status -> StatusResponse
+  {job_id, doc_id, filename, status, phase, chunks_indexed, pages_processed, error}
+  Status: processing | parsing | embedding | indexed | replaced | failed | duplicate
+
+GET /api/v3/documents -> DocumentListResponse
+  Returns all indexed V3 documents from lako.db.
+  {documents: [{doc_id, filename, source_type, chunk_count, page_count, ingested_at, indexed_at}]}
+
+GET /api/v3/documents/{doc_id}/file
+  Download the stored original file from storage/documents/{doc_id}/original.{ext}
+
+DELETE /api/v3/documents/{doc_id}
+  Remove document from: Qdrant lako_documents, SQLite lako.db, filesystem storage/documents/{doc_id}/
+
+────────────────────────────────────────────────────────────────────────────────
+8d. backend/routers/confluence_v3.py  — Confluence V3 Ingestion
+────────────────────────────────────────────────────────────────────────────────
+
+POST /api/v3/ingest/confluence
+  REQUEST: {url, email?, api_token?, auth_type="bearer"|"basic", crawl_subpages=true}
+  Returns {job_id, status, message}
+
+  Auth types:
+    bearer — OAuth 2.0 / scoped app tokens (Authorization: Bearer <token>)
+    basic  — Classic Atlassian API tokens (Authorization: Basic base64(email:token))
+
+GET /api/v3/ingest/confluence/{job_id}/status -> ConfluenceV3StatusResponse
+  {job_id, status, pages_found, pages_done, chunks_total, current_page, errors, error}
+  Status: queued | crawling | processing | complete | failed
+
+PIPELINE (_run_pipeline):
+  1. crawl_subpages=true → BFS collect all page IDs from root
+     crawl_subpages=false → use root page only
+  2. For each page: _ingest_single_page()
+
+_ingest_single_page():
+  1. fetch_page_by_id() → page HTML
+  2. SHA-256 hash → dedup check (skip if content unchanged)
+  3. find_by_source_id("confluence:{page_id}") → find previous version
+  4. parse_page_content() → list of text/table/code chunks
+  5. create SQLite doc row
+  6. For each chunk: embed → upsert Qdrant lako_documents
+  7. update status=indexed
+  8. Evict old version AFTER new is fully indexed
+
+────────────────────────────────────────────────────────────────────────────────
+8e. backend/routers/health_v2.py  — Health, Readiness, Reindex
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/v2/health -> HealthResponse
+  {qdrant_status, points_count, vectors_count, collection, error, cache_stats}
+  cache_stats from query_cache.stats()
+
+GET /api/v2/ready -> ReadyResponse
+  {ready, llm, embedder, model_name, embedding_model}
+  Returns true only after both models responded to warm-up.
+  Frontend polls this on startup to show "models loading" banner.
+
+POST /api/v2/reindex/{doc_id}
+  Re-summarise all pages + re-embed for a single document. Background task.
+
+POST /api/v2/reindex
+  Drop + recreate lako_page_summaries collection, re-embed all existing summaries.
+
+DELETE /api/v2/clear -> ClearResponse
+  Permanently delete all V2 data:
+    - Drop + recreate Qdrant collection
+    - Delete all SQLite rows (documents, pages, page_summaries)
+    - Clear query cache
+
+────────────────────────────────────────────────────────────────────────────────
+8f. backend/routers/dashboard.py  — Dashboard Stats
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/dashboard/stats
+  Aggregates stats from ChromaDB (V1 legacy), Qdrant V3, Ollama, API keys,
+  activity log.
+
+  Returns:
+    vector_db: {total_chunks, total_documents, sources: {pdf, confluence}, last_updated}
+    models:    {primary, vision, embeddings, ollama_status}
+    ingestion: {total_jobs, successful, skipped, failed, last_job_at}
+    api_keys:  {total, active}
+    system:    {uptime_seconds, backend_version}
+
+  V3 Qdrant stats: uses Filter count API (not scroll) for efficiency.
+  V3 doc count: queries lako.db COUNT WHERE status='indexed'.
+
+GET /api/dashboard/recent-activity
+  Returns last 10 entries from activity_log.
+
+
+================================================================================
+SECTION 9 — SERVICES
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+9a. backend/services/ollama_client.py
+────────────────────────────────────────────────────────────────────────────────
+
+OllamaClient class — singleton (ollama_client = OllamaClient())
+Reads config fresh on each call → config changes take effect immediately.
+
+METHODS:
+  list_models() -> list[dict]          GET /api/tags, returns [{name, size, modified}]
+  health_check() -> bool               GET / on Ollama, returns True if 200
+  stream_chat(prompt, model, system)   POST /api/generate stream=True
+                                       AsyncGenerator[str] — yields tokens
+  chat(prompt, model, system) -> str   POST /api/generate stream=False
+  embed(text) -> list[float]           POST /api/embed, single text → 768-dim vector
+  embed_batch(texts) -> list[list[float]]  Batch embed, more efficient than loop
+  describe_image(image_base64, prompt) -> str  Vision model call, stream=False
+
+All calls use get_ollama_runtime_options() for num_ctx, temperature, etc.
+stream_chat/chat timeout: 300s. embed timeout: 30s. vision timeout: 60s.
+
+────────────────────────────────────────────────────────────────────────────────
+9b. backend/services/http_client.py
+────────────────────────────────────────────────────────────────────────────────
+
+Shared persistent httpx.AsyncClient for all V2 Ollama calls.
+Connection pooling avoids per-request TCP handshake (~10–20ms savings).
+
+Settings:
+  connect: 10s, read: 300s, write: 30s, pool: 5s
+  max_connections: 10, max_keepalive: 5, keepalive_expiry: 30s
+
+FUNCTIONS:
+  get_ollama_http_client() -> httpx.AsyncClient  (lazy singleton)
+  close_ollama_http_client()                      (called in lifespan shutdown)
+
+────────────────────────────────────────────────────────────────────────────────
+9c. backend/services/model_warmer.py
+────────────────────────────────────────────────────────────────────────────────
+
+Sends minimal warmup requests on startup to pre-load both models into GPU.
+Without warmup: first query takes 15–30s. After: < 2s.
+
+warm_models(primary_model, embedding_model, ollama_url):
+  Sends 1-token LLM generate + 1-text embed → marks _ready flags.
+
+is_ready() -> bool   True only if both LLM and embedder responded.
+get_status() -> dict {llm, embedder, model_name, embedding_model, warmed_at}
+
+State stored in module-level _ready dict → accessible from /api/v2/ready endpoint.
+
+────────────────────────────────────────────────────────────────────────────────
+9d. backend/services/confluence_client.py
+────────────────────────────────────────────────────────────────────────────────
+
+ConfluenceClient class — singleton (confluence_client = ConfluenceClient())
+
+URL PARSING:
+  extract_page_id(url) → supports:
+    Cloud: /pages/{id} or /pages/{id}/Title
+    Server/DC: ?pageId={id}
+  _base_url(url) → extracts scheme+host
+
+AUTH:
+  auth_type="bearer" → Authorization: Bearer <token>  (OAuth, scoped apps)
+  auth_type="basic"  → Authorization: Basic base64(email:token)  (Classic tokens)
+
+PAGE FETCHING:
+  fetch_page(url, api_token, email, auth_type) → {title, content, url, updated, author}
+    Tries Cloud v2 API first (/wiki/api/v2/pages/{id}?body-format=storage)
+    Falls back to v1 API (/wiki/rest/api/content/{id}?expand=body.storage,version,history)
+  fetch_page_by_id(base_url, page_id, ...) → same shape
+
+HTML PARSING (parse_page_content):
+  Parses Confluence HTML storage format.
+  Strips: script, style, ac:structured-macro tags.
+  Extracts: headings, paragraphs, tables, code blocks, lists.
+  Section headings prepended to every subsequent chunk.
+  TOKEN_LIMIT = 500 per chunk.
+
+  TABLE HANDLING (_materialize_table):
+    Full colspan/rowspan expansion via sparse 2D grid.
+    Multi-row header groups merged with " / ".
+    Produces TWO chunk types per table:
+      table_summary — "Table with N rows. Columns: col1, col2, ..."
+      table_row     — "Header: Value\nHeader: Value" per row (merged ≤ TOKEN_LIMIT)
+
+RECURSIVE CRAWL:
+  collect_all_page_ids(root_url, ...) → BFS from root, returns all IDs
+  _get_child_page_ids() → handles pagination (limit=50 per request)
+
+
+================================================================================
+SECTION 10 — FRONTEND APP SHELL
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+10a. frontend/src/App.jsx
+────────────────────────────────────────────────────────────────────────────────
+
+Root component. Layout: Sidebar (left) + Header (top) + main (scrollable).
+
+ROUTES:
+  /              → redirect to /dashboard
+  /dashboard     → Dashboard component
+  /chat          → Chat component
+  /ingest/docs   → DocumentIngestion component
+  /ingest/confluence → ConfluenceIngestion component
+  /vector        → VectorDB component
+  /settings      → Settings component
+
+Note: React Router mounts/unmounts components on navigation.
+Chat state preserved via Zustand (not local useState) to survive unmount.
+
+────────────────────────────────────────────────────────────────────────────────
+10b. frontend/src/store/appStore.js
+────────────────────────────────────────────────────────────────────────────────
+
+Zustand store — single source of truth for global state.
+
+CHAT SESSION STATE (persists across navigation):
+  chatMessages:    []          — Full conversation history
+  chatRagMode:     'rag'       — 'rag' | 'web'
+  chatSelectedDoc: ''          — Selected doc_id filter
+  chatShowDebug:   false       — Show timing debug panel
+
+  setChatMessages(msgs)
+  appendChatMessage(msg)
+  updateLastChatMessage(updater)  — updater: (lastMsg) => newMsg
+                                    Used during streaming to mutate last message
+  clearChatMessages()
+  setChatRagMode(mode)
+  setChatSelectedDoc(id)
+  setChatShowDebug(v)
+
+MODEL STATE:
+  availableModels, primaryModel, visionModel, embeddingModel, modelHealth
+
+VECTOR DB STATE:
+  vectorStats: {status, total_chunks, collection_count, chromadb_path}
+
+INGESTION STATE:
+  activeJobId, ingestionProgress (0-100), ingestionStatus (idle/processing/done/error)
+
+SETTINGS STATE:
+  settings: {primary_model, vision_model, embedding_model, ollama_url,
+             chromadb_path, confluence_url, confluence_email, top_k,
+             similarity_threshold, api_key}
+
+
+================================================================================
+SECTION 11 — FRONTEND PAGES
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+11a. frontend/src/pages/Chat.jsx
+────────────────────────────────────────────────────────────────────────────────
+
+Main chat interface. Connects to POST /api/v2/query SSE endpoint.
+
+PERSISTENT STATE (Zustand):
+  messages, ragMode, selectedDocId, showDebug
+
+EPHEMERAL STATE (local useState, resets on mount):
+  prompt, loading, streaming, v2Docs, modelReady, showScrollBtn
+
+KEY COMPONENTS:
+  MessageBubble — renders user/assistant messages
+    - User messages: edit button (pencil) on hover at left
+    - Assistant messages: copy action bar on hover below message
+      Copy button shows "Copy" icon → switches to green "Copied" for 1.8s
+    - Error messages: red bg styling
+    - Streaming cursor: blinking blue bar in last assistant message
+    - Citations: V2Citations component (collapsible source list)
+    - Debug timing: TimingPanel (shows embedding_ms, search_ms, etc.)
+
+  V2Citations — collapsible source list
+    RAG sources: filename + page + relevance score
+    Web sources: clickable title + URL
+
+  TimingPanel — shows per-step milliseconds or "cache hit" badge
+
+  TypingDots — animated 3-dot loader while waiting for first token
+
+SSE STREAMING (readSSEStream):
+  Uses fetch + ReadableStream (EventSource cannot POST).
+  Parses "data: {json}\n\n" lines from stream.
+  onToken: updateLastChatMessage(last => ({...last, content: last.content + token}))
+  onDone:  updateLastChatMessage(last => ({...last, sources, timing}))
+  onError: updateLastChatMessage(last => ({...last, content: errMsg, isError: true}))
+
+TOOLBAR:
+  Search documents | Search web  (segmented toggle)
+  Document selector dropdown     (from /api/v2/documents)
+  Cache refresh button
+  Debug timing toggle (⚡)
+  Clear button (when messages exist)
+
+SEND LOGIC:
+  Enter = send, Shift+Enter = new line.
+  Appends user + empty assistant message pair before starting fetch.
+  AbortController → stop button during streaming.
+
+EDIT:
+  User message edit button removes that message and all after it,
+  restores text to input, focuses textarea.
+
+────────────────────────────────────────────────────────────────────────────────
+11b. frontend/src/pages/Dashboard.jsx
+────────────────────────────────────────────────────────────────────────────────
+
+Real-time system stats page. Data from /api/dashboard/stats and
+/api/dashboard/recent-activity.
+
+PANELS:
+  Stat cards (4): Total Chunks, Documents Indexed, Active API Keys, Ollama status
+  V2StatsPanel: V2 doc count, Qdrant vector count, cache hit rate, LLM/embedder ready
+  Knowledge Base: PDF vs Confluence chunk counts + visual ratio bar
+  Models: primary/vision/embedding model names + health dots
+  Recent Activity: table of last 10 ingestion events (type/title/chunks/status/duration/time)
+
+V2StatsPanel polls: /api/v2/health, /api/v2/ready, /api/v2/documents in parallel.
+
+useDashboard hook: polls /api/dashboard/stats + /api/dashboard/recent-activity,
+returns {stats, activity, isLoading, error, refresh, lastUpdated}.
+
+────────────────────────────────────────────────────────────────────────────────
+11c. frontend/src/pages/DocumentIngestion.jsx
+────────────────────────────────────────────────────────────────────────────────
+
+Two-section page:
+  Top: V2IngestSection — V2 Smart Index (POST /api/v2/ingest)
+  Bottom: V1 ingestion — Legacy ChromaDB (POST /api/ingest/docs)
+
+V2 INGEST SECTION:
+  Drag-drop or click-to-browse (accepts .pdf, .pptx, .docx).
+  Polls /api/v2/ingest/{job_id}/status every 2s.
+  Progress bar with phase labels:
+    Extracting pages… | Summarizing (N/M)… | Embedding… | Ready ✓
+  Shows list of already-indexed V2 docs.
+
+V1 INGEST SECTION:
+  Multi-file drag-drop (accepts .pdf, .txt, .xlsx, .docx, .pptx).
+  Polls /api/ingest/status?job_id={id} every 3s.
+  Toggle: generate_summaries (LLM table summaries on/off).
+  Progress bar from 0–100%.
+
+
+================================================================================
+SECTION 12 — FRONTEND i18n
+================================================================================
+
+File: frontend/src/i18n/en.json
+
+All user-visible strings are externalised. Supports EN + NL via react-i18next.
+Language auto-detected from browser or toggled via LanguageSwitcher component.
+
+KEY NAMESPACES:
+  nav, header, dashboard, chat, documents, confluence, settings, sources, v2, cfV3, common
+
+CHAT-SPECIFIC KEYS:
+  chat.placeholder         — "Ask a question about your documents..."
+  chat.clear               — "Clear"
+  v2.chat.ragMode          — "Search documents"
+  v2.chat.webMode          — "Search web"
+  v2.chat.allDocs          — "All documents"
+  v2.chat.debugPanel       — "Debug"
+  v2.chat.cacheHit         — "Cache hit"
+  v2.chat.noDocsWarning    — Warning when index is empty
+  v2.chat.modelsLoading    — "Models loading, please wait…"
+
+SOURCES KEYS:
+  sources.used             — "1 source used"
+  sources.usedPlural       — "N sources used"
+  sources.page             — "p.{page}"
+
+
+================================================================================
+SECTION 13 — API ENDPOINT REFERENCE
+================================================================================
+
+V2 ENDPOINTS (primary RAG system):
+  POST   /api/v2/query                     — RAG or web search (SSE streaming)
+  POST   /api/v2/ingest                    — Upload document (PDF/PPTX/DOCX)
+  GET    /api/v2/ingest/{job_id}/status    — Poll ingestion progress
+  GET    /api/v2/documents                 — List all ready documents
+  GET    /api/v2/health                    — Qdrant stats + cache stats
+  GET    /api/v2/ready                     — Model warmup readiness
+  POST   /api/v2/reindex/{doc_id}          — Re-summarise + re-embed one doc
+  POST   /api/v2/reindex                   — Rebuild entire Qdrant collection
+  DELETE /api/v2/clear                     — Wipe all V2 data
+
+V3 ENDPOINTS (direct-RAG, more file types):
+  POST   /api/v3/ingest                    — Upload doc (PDF/DOCX/PPTX/XLSX/HTML)
+  GET    /api/v3/ingest/{job_id}/status    — Poll ingestion progress
+  GET    /api/v3/documents                 — List all indexed V3 documents
+  GET    /api/v3/documents/{doc_id}/file   — Download original file
+  DELETE /api/v3/documents/{doc_id}        — Delete doc from Qdrant + SQLite + filesystem
+
+CONFLUENCE V3:
+  POST   /api/v3/ingest/confluence                    — Queue Confluence ingest
+  GET    /api/v3/ingest/confluence/{job_id}/status    — Poll progress
+
+DASHBOARD:
+  GET    /api/dashboard/stats              — Aggregated system stats
+  GET    /api/dashboard/recent-activity    — Last 10 ingestion events
+
+HEALTH:
+  GET    /health                           — Legacy health (ChromaDB + Ollama + cache)
+  GET    /                                 — {"status": "ok"}
+
+V1 LEGACY (ChromaDB-based, still mounted):
+  POST   /api/ingest/docs                  — Legacy multi-file ingest
+  GET    /api/ingest/status                — Legacy job status
+  POST   /api/rag/query                    — Legacy RAG query
+  GET    /api/models                       — List Ollama models
+  GET    /api/vector/stats                 — ChromaDB stats
+  POST   /api/config                       — Save config.json
+  GET    /api/config                       — Read config.json
+  POST   /api/gateway/keys                 — Generate API key
+  GET    /api/gateway/keys                 — List API keys
+  GET    /api/admin/cache/clear            — Clear query cache
+
+
+================================================================================
+SECTION 14 — DATA MODELS REFERENCE
+================================================================================
+
+SQLITE V2 (lako_v2.db):
+  documents: doc_id (PK), filename, source_type, total_pages, file_hash,
+             ingested_at, status
+             Status values: processing, extracting, summarizing, embedding,
+                            reindexing, ready, failed
+
+  pages: id, doc_id (FK), page_num, raw_text, headers (JSON array),
+         has_tables, char_count
+         UNIQUE(doc_id, page_num)
+
+  page_summaries: id, doc_id, page_num, summary_text, embedded (bool)
+                  UNIQUE(doc_id, page_num)
+
+SQLITE V3 (lako.db):
+  documents: id (PK), filename, hash, source_type, source_id,
+             status, chunk_count, page_count, ingested_at, indexed_at,
+             error_message
+             Status values: pending, processing, parsing, embedding, indexed, failed
+
+  document_chunks: id (PK), doc_id (FK), page, block_type, chunk_index,
+                   qdrant_id, created_at
+
+QDRANT PAYLOADS:
+  lako_page_summaries point:
+    doc_id, page_num, filename, source_type,
+    headers (str, pipe-joined), has_tables (bool), summary_text
+
+  lako_documents point:
+    doc_id, filename, source_type, block_type, page, text,
+    [for PDF/DOCX/PPTX/XLSX]: bbox, font_size, is_bold, ingested_at
+    [for Confluence]: source_id, page_id, url, updated
+
+BLOCK TYPES (V3):
+  text               — Regular paragraph/body text
+  table              — Flattened table rows
+  image_description  — Vision model description of an image/diagram
+  table_summary      — Confluence table summary chunk
+  table_row          — Confluence table row chunk
+
+IN-MEMORY JOB TRACKER (routers):
+  _jobs: {job_id: {filename, status, phase, pages_processed, total_pages,
+                   doc_id, chunks_indexed, error}}
+  Never deleted — survives for historical poll after completion.
+  Lost on server restart — SQLite fallback used.
+
+
+================================================================================
+SECTION 15 — KEY DESIGN DECISIONS
+================================================================================
+
+1. DUAL QDRANT COLLECTIONS
+   lako_page_summaries stores LLM-generated summaries (V2 pipeline).
+   lako_documents stores raw chunks (V3 pipeline + Confluence).
+   Both are queried in every search and merged before MMR.
+   Rationale: V2 summaries are more semantically dense for retrieval;
+   V3 raw chunks are better for exact table/number retrieval.
+
+2. INGEST-FIRST, SWAP-AFTER (atomic document replacement)
+   When re-uploading an existing document, the new doc is fully indexed
+   before the old one is deleted. This ensures zero downtime — queries
+   against the old doc still work until the new one is ready.
+   The old doc ID is recorded at start but deletion is deferred to the end.
+
+3. MMR GUARANTEE SLOTS
+   Standard MMR would score across all candidates and let one document
+   dominate. LAKO's modified MMR guarantees max(1, top_k//num_docs) slots
+   per document regardless of score. This is critical for a bank using
+   documents from multiple domains (economic reports, HR policies, legal docs)
+   where cross-domain cosine similarity is low.
+
+4. SCORE THRESHOLD ONLY ON FILL SLOTS
+   Guaranteed slots bypass score_threshold entirely. Only the "fill" pass
+   enforces the threshold. This prevents minority-domain documents from being
+   filtered out when their page summaries are semantically distant from the
+   query domain.
+
+5. V3 DIRECT-RAG (NO SUMMARISATION)
+   V2 required LLM summarisation per page (slow, model-dependent quality).
+   V3 skips summarisation entirely — raw text preserved in Qdrant payload.
+   Trade-off: chunks are larger and less semantically focused, but ingest is
+   much faster and text fidelity is perfect (important for exact figures).
+
+6. PAGE CLASSIFIER IN V3
+   Instead of treating all content uniformly, V3 classifies each PDF page as
+   TEXT_RICH / TABLE / IMAGE_ONLY / MIXED. This ensures:
+     - Tables use pdfplumber's structured extraction (not raw text dump)
+     - Image-only slides/pages go through vision model (no silent data loss)
+     - Mixed pages get both text and image descriptions
+
+7. SENTENCE-BOUNDARY CHUNKING WITH OVERLAP
+   smart_chunk() splits at sentence boundaries (not fixed character count)
+   to preserve semantic units. 50-token overlap ensures retrieval context
+   spans chunk boundaries. Tables are never split (kept whole).
+
+8. EMBEDDED QDRANT (NO DOCKER)
+   Qdrant runs embedded (storage/qdrant/) — no separate Docker container.
+   Simplifies deployment. Drawback: can only serve one process at a time.
+
+9. PERSISTENT CHAT STATE
+   Chat messages stored in Zustand (not React local state) so the conversation
+   history survives navigation between pages. Only cleared on explicit "Clear".
+   Streaming/loading state is ephemeral (local useState) — resets on remount.
+
+10. QUERY CACHE INVALIDATION
+    query_cache.clear() is called whenever a new document is ingested.
+    This ensures cached answers don't become stale when new knowledge is added.
+    doc_id-filtered queries bypass the cache entirely.
+
+11. CONFLUENCE TABLE ENTERPRISE HANDLING
+    Confluence tables often use colspan/rowspan for complex layouts.
+    _materialize_table() builds a full 2D grid expansion before extracting
+    headers and data rows. Multi-row header groups are merged with " / ".
+    Produces two chunk types: table_summary (for overview queries) and
+    table_row (for data lookup queries).
+
+12. DEDUPLICATION BY CONTENT HASH
+    SHA-256 hash of file bytes catches exact duplicates regardless of filename.
+    Same filename + different hash → triggers replacement flow.
+    Same hash → immediate return of existing doc_id, no reprocessing.
+
+13. LANGUAGE SUPPORT (EN / NL)
+    All frontend strings externalised to i18n/en.json + nl.json.
+    Chat responses also language-aware: system prompt instructs LLM to respond
+    in the user's language. Language detected from i18n locale.
+
+================================================================================
+END OF DOCUMENT
+================================================================================

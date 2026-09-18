@@ -115,6 +115,31 @@ async def get_document(doc_id: str) -> Optional[dict]:
             return dict(row) if row else None
 
 
+async def find_document_by_filename(filename: str) -> Optional[dict]:
+    """Return the most recent ready document with this filename, or None."""
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM documents
+            WHERE filename = ? AND status = 'ready'
+            ORDER BY ingested_at DESC LIMIT 1
+            """,
+            (filename,),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def delete_document_all_data(doc_id: str) -> None:
+    """Delete a document and all its pages and summaries from SQLite."""
+    async with aiosqlite.connect(_db_path()) as db:
+        await db.execute("DELETE FROM page_summaries WHERE doc_id = ?", (doc_id,))
+        await db.execute("DELETE FROM pages WHERE doc_id = ?", (doc_id,))
+        await db.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+        await db.commit()
+
+
 async def get_document_by_hash(file_hash: str) -> Optional[dict]:
     async with aiosqlite.connect(_db_path()) as db:
         db.row_factory = aiosqlite.Row

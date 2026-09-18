@@ -25,6 +25,8 @@ import structlog
 
 from db.document_store import (
     create_document,
+    delete_document_all_data,
+    find_document_by_filename,
     get_document_by_hash,
     get_pages,
     init_db,
@@ -81,12 +83,17 @@ async def ingest_document(
     path     = Path(file_path)
     filename = original_filename or path.name
 
-    # ── Deduplication ─────────────────────────────────────────────────────────
+    # ── Deduplication: identical content → skip entirely ─────────────────────
     file_hash = _sha256(file_path)
     existing  = await get_document_by_hash(file_hash)
     if existing and existing["status"] == "ready":
         logger.info("duplicate_skipped", filename=filename, doc_id=existing["doc_id"])
         return existing["doc_id"]
+
+    # ── Detect same filename, different content ───────────────────────────────
+    # Store reference now — do NOT delete yet. Old doc stays live until the
+    # new one is fully indexed (ingest-first, swap-after).
+    prev = await find_document_by_filename(filename)
 
     # ── Create document record ────────────────────────────────────────────────
     doc_id = str(uuid.uuid4())
@@ -97,7 +104,7 @@ async def ingest_document(
         file_hash=file_hash,
     )
     log = logger.bind(doc_id=doc_id, filename=filename, source_type=source_type)
-    log.info("ingestion_started")
+    log.info("ingestion_started", replacing=prev["doc_id"] if prev else None)
 
     try:
         # ── Pass 1: Structure extraction ──────────────────────────────────────
@@ -160,6 +167,30 @@ async def ingest_document(
 
         await update_document_status(doc_id, "ready")
         log.info("ingestion_complete", total_pages=total_pages)
+
+        # ── Evict old doc now that new one is fully ready ─────────────────────
+        # Safe to delete: new doc is indexed and verified. If this block fails,
+        # we log a warning but do not fail the ingestion — the new doc is live.
+        if prev:
+            old_id = prev["doc_id"]
+            log.info("evicting_old_doc", old_doc_id=old_id, filename=filename)
+            try:
+                from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+                from ingestion.embedder_v2 import _get_qdrant, COLLECTION_NAME
+
+                client = await _get_qdrant()
+                await client.delete(
+                    collection_name=COLLECTION_NAME,
+                    points_selector=Filter(
+                        must=[FieldCondition(key="doc_id", match=MatchValue(value=old_id))]
+                    ),
+                )
+                log.info("old_qdrant_vectors_deleted", old_doc_id=old_id)
+            except Exception as exc:
+                log.warning("old_qdrant_delete_failed", old_doc_id=old_id, error=str(exc))
+
+            await delete_document_all_data(old_id)
+            log.info("old_doc_sqlite_deleted", old_doc_id=old_id)
 
     except Exception as exc:
         await update_document_status(doc_id, "failed")

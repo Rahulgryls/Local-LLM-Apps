@@ -162,6 +162,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict], generate_s
         for file_index, fd in enumerate(file_data):
             filename = fd["filename"]
             content = fd["content"]
+            file_size_mb = len(content) / 1_048_576
             file_chunk_counts[filename] = 0
             file_started_at = datetime.now(timezone.utc)   # track per-file start time
             file_base = file_index / total_files        # 0.0 → 1.0
@@ -196,6 +197,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict], generate_s
                     status="skipped",
                     error="Identical file already in knowledge base",
                     duration_seconds=(datetime.now(timezone.utc) - file_started_at).total_seconds(),
+                    file_size_mb=file_size_mb,
                 )
                 logging.info(f"[ingest] skipped '{filename}' — hash unchanged and chunks present")
                 continue
@@ -408,6 +410,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict], generate_s
                     status="failed",
                     error="No extractable text content found (image-only file?)",
                     duration_seconds=(datetime.now(timezone.utc) - file_started_at).total_seconds(),
+                    file_size_mb=file_size_mb,
                 )
                 continue
 
@@ -431,6 +434,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict], generate_s
                     status="failed",
                     error="Chunker produced no chunks",
                     duration_seconds=(datetime.now(timezone.utc) - file_started_at).total_seconds(),
+                    file_size_mb=file_size_mb,
                 )
                 continue
 
@@ -516,6 +520,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict], generate_s
                 chunks_indexed=len(chroma_chunks),
                 status="success",
                 duration_seconds=(datetime.now(timezone.utc) - file_started_at).total_seconds(),
+                file_size_mb=file_size_mb,
             )
 
         # ── All files done ────────────────────────────────────────────────
@@ -542,6 +547,7 @@ async def _run_ingestion_pipeline(job_id: str, file_data: List[dict], generate_s
                     chunks_indexed=0,
                     status="failed",
                     error=str(e),
+                    file_size_mb=len(fd["content"]) / 1_048_576,
                 )
 
 

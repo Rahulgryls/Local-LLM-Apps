@@ -43,17 +43,29 @@ class RAGResponse(BaseModel):
 
 @router.get("/cache/stats")
 async def cache_stats():
-    """Return current query-cache occupancy."""
-    return {"cached_queries": len(_query_cache), "max_size": 50, "ttl_seconds": 3600}
+    """Return current query-cache occupancy (V1 + V2 combined)."""
+    from cache import query_cache as v2_cache
+    v2_stats = v2_cache.stats()
+    return {
+        "cached_queries": len(_query_cache) + v2_stats["size"],
+        "v1_cached":      len(_query_cache),
+        "v2_cached":      v2_stats["size"],
+        "max_size":       50,
+        "ttl_seconds":    3600,
+    }
 
 
 @router.delete("/cache")
 async def clear_cache():
-    """Invalidate all cached RAG query results."""
-    before = len(_query_cache)
+    """Invalidate all cached RAG query results (V1 + V2)."""
+    from cache import query_cache as v2_cache
+    before_v1 = len(_query_cache)
+    v2_before = v2_cache.stats()["size"]
     invalidate_query_cache()
-    logging.info(f"[cache] Manually cleared {before} cached entr{'y' if before == 1 else 'ies'} via API")
-    return {"cleared": before, "cached_queries": 0}
+    await v2_cache.clear()
+    total = before_v1 + v2_before
+    logging.info(f"[cache] Manually cleared {total} cached entries (v1={before_v1}, v2={v2_before})")
+    return {"cleared": total, "cached_queries": 0}
 
 
 @router.post("/rag/query")

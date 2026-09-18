@@ -13,11 +13,11 @@ import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from services.api_key_manager import api_key_manager
+from services.auth_deps import require_key, require_permission
 from services.rag_engine import rag_engine
 from services.confluence_client import confluence_client
 from services.embedder import embedder
@@ -27,36 +27,11 @@ from services.bm25_index import bm25_index
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-
-# ── Auth dependency ──────────────────────────────────────────────────────────
-
-async def _require_key(x_api_key: str = Header(..., alias="X-API-Key")) -> dict:
-    """
-    FastAPI dependency — validates X-API-Key header.
-    Raises 401 if key is missing or invalid/revoked.
-    """
-    key_data = api_key_manager.validate_key(x_api_key)
-    if not key_data:
-        raise HTTPException(status_code=401, detail="Invalid or revoked API key.")
-    return key_data
-
-
-async def _require_query_permission(x_api_key: str = Header(..., alias="X-API-Key")) -> dict:
-    key_data = api_key_manager.validate_key(x_api_key)
-    if not key_data:
-        raise HTTPException(status_code=401, detail="Invalid or revoked API key.")
-    if not api_key_manager.check_permission(key_data, "query"):
-        raise HTTPException(status_code=403, detail="This key does not have 'query' permission.")
-    return key_data
-
-
-async def _require_ingest_permission(x_api_key: str = Header(..., alias="X-API-Key")) -> dict:
-    key_data = api_key_manager.validate_key(x_api_key)
-    if not key_data:
-        raise HTTPException(status_code=401, detail="Invalid or revoked API key.")
-    if not api_key_manager.check_permission(key_data, "ingest"):
-        raise HTTPException(status_code=403, detail="This key does not have 'ingest' permission.")
-    return key_data
+# Auth dependencies now live in services/auth_deps.py, shared with every
+# other router that needs a stricter per-endpoint permission check.
+_require_key = require_key
+_require_query_permission = require_permission("query")
+_require_ingest_permission = require_permission("ingest")
 
 
 # ── Request / Response models ────────────────────────────────────────────────
