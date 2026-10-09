@@ -6,19 +6,21 @@ services:
   - type: web
     name: lako
     runtime: docker
-    plan: starter            # persistent disks aren't available on the free plan
+    plan: free               # ephemeral disk; durability comes from the private GitHub data repo
     healthCheckPath: /api/v2/health
-    disk:
-      name: lako-data
-      mountPath: /var/data
-      sizeGB: 10
     envVars:
       - key: LAKO_STORAGE_DIR
-        value: /var/data/storage
+        value: /data/storage
       - key: CHROMADB_PATH
-        value: /var/data/storage/chromadb
+        value: /data/storage/chromadb
       - key: API_KEYS_PATH
-        value: /var/data/storage/api_keys.json
+        value: /data/storage/api_keys.json
+      # GitHub-as-disk: a PRIVATE repo that stores snapshots of all documents + indexes.
+      # Token needs Contents read/write on that repo only (fine-grained PAT).
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_DATA_REPO
+        sync: false          # e.g. Rahulgryls/lako-data
       # Where Ollama is reachable from Render (e.g. a Cloudflare Tunnel to your Mac).
       - key: OLLAMA_URL
         sync: false

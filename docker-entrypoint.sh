@@ -4,7 +4,7 @@
 # persistent disk so documents, Qdrant, SQLite and API keys survive redeploys.
 set -e
 
-DATA_DIR="${LAKO_STORAGE_DIR:-/var/data/storage}"
+DATA_DIR="${LAKO_STORAGE_DIR:-/data/storage}"
 mkdir -p "$DATA_DIR" "$DATA_DIR/chromadb"
 if [ ! -L /app/storage ]; then
   rm -rf /app/storage
@@ -12,5 +12,6 @@ if [ ! -L /app/storage ]; then
 fi
 
 cd /app/backend
+python scripts/restore_snapshot.py
 python scripts/ensure_ui_key.py
 exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}"

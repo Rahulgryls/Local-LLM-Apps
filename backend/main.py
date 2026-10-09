@@ -85,12 +85,22 @@ async def lifespan(app: FastAPI):
             except Exception as _bm25_exc:
                 print(f"[LAKO] BM25 index build failed (non-fatal): {_bm25_exc}")
 
+        autosave = None
+        from services import github_persist
+        if github_persist.enabled():
+            import asyncio
+            autosave = asyncio.create_task(github_persist.run_autosave())
+            print("[LAKO] GitHub persistence: autosave on")
+
         print("[LAKO] Backend ready — http://localhost:8000")
         print("[LAKO] MCP server    — http://localhost:8000/mcp/")
 
         yield
 
         print("[LAKO] Shutting down...")
+        if autosave:
+            autosave.cancel()
+            await github_persist.flush()
         await close_ollama_http_client()
 
 
