@@ -15,6 +15,7 @@ Session 19: File deduplication — SHA-256 hash checked before every ingest.
 import asyncio
 import io
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,7 +46,7 @@ from config import get_config
 router = APIRouter()
 
 # Uploads directory — files are saved here before parsing
-UPLOADS_DIR = Path("/Users/rahul/lako/storage/uploads")
+UPLOADS_DIR = Path(os.environ.get("LAKO_STORAGE_DIR", "/Users/rahul/lako/storage")) / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # In-memory job tracker — keyed by job_id

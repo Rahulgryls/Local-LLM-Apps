@@ -47,4 +47,4 @@ structlog                 # Structured logging for V2 pipeline
 qdrant-client             # Qdrant vector DB client for V2 pipeline
 
 # ── MCP Server ─────────────────────────────────────────────────
-mcp                       # Official Model Context Protocol SDK — external tool-calling clients
+mcp<2                   # Official MCP SDK. Pinned <2: v2 renamed FastMCP -> MCPServer and breaks mcp_server.py

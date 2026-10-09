@@ -1,0 +1,9 @@
+.git
+.claude
+**/node_modules
+**/.venv
+**/__pycache__
+frontend/dist
+storage
+docs
+*.log

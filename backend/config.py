@@ -12,6 +12,22 @@ from functools import lru_cache
 # Resolve config path relative to project root (two levels up from backend/)
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.json"
 
+# Deployment overrides (e.g. Render): an env var, when set, wins over config.json
+# so a hosted instance needs no committed config edits and no secrets in git.
+_ENV_OVERRIDES = {
+    "OLLAMA_URL":         "ollama_url",
+    "PRIMARY_MODEL":      "primary_model",
+    "VISION_MODEL":       "vision_model",
+    "EMBEDDING_MODEL":    "embedding_model",
+    "SUMMARIZATION_MODEL": "summarization_model",
+    "CHROMADB_PATH":      "chromadb_path",
+    "API_KEYS_PATH":      "api_keys_path",
+    "SEARXNG_URL":        "searxng_url",
+    "CONFLUENCE_URL":     "confluence_url",
+    "CONFLUENCE_EMAIL":   "confluence_email",
+    "CONFLUENCE_TOKEN":   "confluence_token",
+}
+
 _DEFAULT_CONFIG = {
     "ollama_url": "http://localhost:11434",
     "primary_model": "qwen3.5:35b-a3b-coding-nvfp4",
@@ -43,6 +59,9 @@ def get_config() -> dict:
     else:
         print(f"[LAKO] WARNING: config.json not found at {CONFIG_PATH}. Using defaults.")
         config = _DEFAULT_CONFIG.copy()
+    for env_name, key in _ENV_OVERRIDES.items():
+        if os.environ.get(env_name):
+            config[key] = os.environ[env_name]
     return config
 
 

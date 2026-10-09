@@ -5,7 +5,10 @@ Session 1: Environment setup & skeleton
 Session 12: Model pre-warming on startup, enhanced /health endpoint.
 """
 
+import base64
 import logging
+import os
+import secrets
 import time
 from pathlib import Path
 
@@ -133,13 +136,67 @@ async def _require_any_api_key(request: Request, call_next):
     return await call_next(request)
 
 
+# ── Hosted-UI gate (Render) ──────────────────────────────────────────────────
+# In dev, Vite's proxy attaches the API key so the browser never holds one. A
+# hosted build has no Vite proxy, so this plays the same role: when
+# LAKO_BASIC_AUTH_USERS ("user:pass,user2:pass2") is set, everything except
+# the exempt machine-to-machine paths requires HTTP Basic auth, and a
+# Basic-authenticated browser request to /api/* gets LAKO_UI_API_KEY attached
+# server-side. Unset => no-op, local behaviour is unchanged. Requests that
+# already carry their own X-API-Key skip Basic auth and are validated by the
+# API-key middleware above as usual.
+_BASIC_USERS = [
+    u.strip() for u in os.environ.get("LAKO_BASIC_AUTH_USERS", "").split(",") if ":" in u
+]
+_UI_API_KEY = os.environ.get("LAKO_UI_API_KEY", "")
+_GATE_EXEMPT_PREFIXES = ("/mcp", "/api/gateway")
+_GATE_EXEMPT_PATHS = {"/api/v2/health", "/api/v2/ready", "/health"}
+
+
+def _basic_auth_ok(header: str) -> bool:
+    if not header.lower().startswith("basic "):
+        return False
+    try:
+        supplied = base64.b64decode(header[6:]).decode()
+    except Exception:
+        return False
+    return any(secrets.compare_digest(supplied, u) for u in _BASIC_USERS)
+
+
+if _BASIC_USERS:
+
+    @app.middleware("http")
+    async def _ui_gate(request: Request, call_next):
+        path = request.url.path
+        if (
+            request.method == "OPTIONS"
+            or path in _GATE_EXEMPT_PATHS
+            or any(path.startswith(p) for p in _GATE_EXEMPT_PREFIXES)
+            or (path.startswith("/api/") and request.headers.get("x-api-key"))
+        ):
+            return await call_next(request)
+
+        if not _basic_auth_ok(request.headers.get("authorization", "")):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required."},
+                headers={"WWW-Authenticate": 'Basic realm="LAKO"'},
+            )
+        if path.startswith("/api/") and _UI_API_KEY:
+            request.scope["headers"] = [
+                (k, v) for k, v in request.scope["headers"] if k != b"authorization"
+            ] + [(b"x-api-key", _UI_API_KEY.encode())]
+        return await call_next(request)
+
+
 # CORS — allow React dev server on port 5173. Registered AFTER the auth
 # middleware above so it ends up outermost (Starlette applies middleware in
 # reverse registration order) and can still handle CORS preflight (OPTIONS)
 # requests before they'd hit the auth check.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"]
+    + [o.strip() for o in os.environ.get("LAKO_CORS_ORIGINS", "").split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -171,9 +228,13 @@ app.include_router(confluence_v3.router, prefix="/api", tags=["V3 Confluence"])
 app.mount("/mcp", mcp_server.app)
 
 
-@app.get("/", tags=["Health"])
-async def root():
-    return {"status": "ok", "service": "LAKO Backend", "version": "1.0.0"}
+_FRONTEND_DIST = Path(os.environ.get("LAKO_FRONTEND_DIST", Path(__file__).parent.parent / "frontend" / "dist"))
+_SERVE_UI = (_FRONTEND_DIST / "index.html").exists()
+
+if not _SERVE_UI:
+    @app.get("/", tags=["Health"])
+    async def root():
+        return {"status": "ok", "service": "LAKO Backend", "version": "1.0.0"}
 
 
 @app.get("/postman", tags=["Health"])
@@ -231,3 +292,18 @@ async def health():
         "uptime_seconds":  int(time.time() - _startup_time),
         "cache_size":      len(_query_cache),
     }
+
+
+# ── Built React frontend (hosted deploys) ────────────────────────────────────
+# Registered last so every API/health/docs route above wins. Unknown non-API
+# paths fall back to index.html for react-router's BrowserRouter.
+if _SERVE_UI:
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str):
+        if full_path.startswith(("api/", "mcp")):
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = (_FRONTEND_DIST / full_path).resolve()
+        if full_path and candidate.is_file() and _FRONTEND_DIST.resolve() in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")

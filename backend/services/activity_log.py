@@ -7,6 +7,7 @@ Session 11: Created.
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ from config import get_config
 
 logger = logging.getLogger(__name__)
 
-ACTIVITY_LOG_PATH = Path("/Users/rahul/lako/storage/activity_log.json")
+ACTIVITY_LOG_PATH = Path(os.environ.get("LAKO_STORAGE_DIR", "/Users/rahul/lako/storage")) / "activity_log.json"
 MAX_ENTRIES = 50
 
 

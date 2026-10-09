@@ -1,0 +1,46 @@
+# LAKO — Render Blueprint
+# Hosts the FastAPI backend, the built React UI and the /mcp/ endpoint as one
+# web service. Ollama is NOT hosted here (Render has no GPUs) — point OLLAMA_URL
+# at wherever your models run. See docs/RENDER_DEPLOY.md.
+services:
+  - type: web
+    name: lako
+    runtime: docker
+    plan: starter            # persistent disks aren't available on the free plan
+    healthCheckPath: /api/v2/health
+    disk:
+      name: lako-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: LAKO_STORAGE_DIR
+        value: /var/data/storage
+      - key: CHROMADB_PATH
+        value: /var/data/storage/chromadb
+      - key: API_KEYS_PATH
+        value: /var/data/storage/api_keys.json
+      # Where Ollama is reachable from Render (e.g. a Cloudflare Tunnel to your Mac).
+      - key: OLLAMA_URL
+        sync: false
+      - key: PRIMARY_MODEL
+        value: qwen3.6:35b
+      - key: VISION_MODEL
+        value: minicpm-v:latest
+      - key: EMBEDDING_MODEL
+        value: nomic-embed-text
+      # Browser login for the UI, "user:password" (comma-separate for several).
+      - key: LAKO_BASIC_AUTH_USERS
+        sync: false
+      # Key the UI uses server-side. Must start with lako_ (see docs/RENDER_DEPLOY.md).
+      - key: LAKO_UI_API_KEY
+        sync: false
+      # Your *.onrender.com hostname (no scheme), so /mcp/ accepts the Host header.
+      - key: LAKO_MCP_ALLOWED_HOSTS
+        sync: false
+      # Optional Confluence credentials.
+      - key: CONFLUENCE_URL
+        sync: false
+      - key: CONFLUENCE_EMAIL
+        sync: false
+      - key: CONFLUENCE_TOKEN
+        sync: false
